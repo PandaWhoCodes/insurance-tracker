@@ -43,7 +43,7 @@ function showMainScreen(user) {
 async function loadPolicies() {
     const data = await API.policies();
     if (data && data.policies && data.policies.length > 0) {
-        allPolicies = data.policies;
+        allPolicies = data.policies.filter(p => p.premium && p.sum_insured && p.policy_end);
         renderSummary(allPolicies);
         renderFiltered();
         updateCacheInfo(data.fetched_at, data.from_cache);
@@ -120,8 +120,9 @@ function refreshPolicies() {
 
         setTimeout(() => {
             hideProgress();
-            if (d.policies && d.policies.length > 0) {
-                allPolicies = d.policies;
+            const complete = (d.policies || []).filter(p => p.premium && p.sum_insured && p.policy_end);
+            if (complete.length > 0) {
+                allPolicies = complete;
                 renderSummary(allPolicies);
                 renderFiltered();
                 updateCacheInfo(d.fetched_at, false);

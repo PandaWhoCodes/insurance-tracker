@@ -8,33 +8,11 @@ from datetime import datetime
 from openai import AsyncOpenAI
 
 from services import db_service
+from services.triage_service import TriageService
 
 logger = logging.getLogger(__name__)
 
-TRIAGE_CONCURRENCY = 10
 EXTRACT_CONCURRENCY = 3
-
-TRIAGE_PROMPT = """You classify emails. Given an email's subject, sender, and snippet, determine if this email likely contains an insurance policy document or policy-related attachment.
-
-ALWAYS YES (is_insurance: true):
-- Policy schedules, policy copies, policy documents
-- Renewal confirmations, renewed policy documents
-- Premium payment receipts or premium certificates
-- Term life policy copies
-- Any email with "policy" and a number in subject
-- Any email from an insurance company with attachments
-- Subjects like "Insurance Premiums", "policy copy", "policy document"
-
-ONLY NO (is_insurance: false):
-- Pure marketing/promotional with no policy attachment
-- Newsletters, advertisements, offers
-- OTP/verification codes
-- Bank statements, fund reports, AGM notices
-
-When in doubt, say YES. It is better to include a non-policy than miss a real one.
-
-Return ONLY this JSON:
-{"is_insurance": true/false, "reason": "5 words max"}"""
 
 EXTRACT_PROMPT = """You are an expert insurance document analyzer. Given extracted text from an insurance policy PDF or email, extract structured policy information.
 
@@ -108,8 +86,9 @@ class PipelineService:
             base_url="https://api.x.ai/v1",
         )
         self.model = "grok-4-1-fast-reasoning"
+        self._triage = TriageService()
 
-    # ── Stage 1: Triage ──────────────────────────────
+    # ── Stage 1: Triage (local ML) ───────────────────
 
     async def triage(
         self,
@@ -123,12 +102,7 @@ class PipelineService:
         # Partition into cached vs new
         new_emails = [m for m in email_metadata if m["msg_id"] not in skip_msg_ids]
         cached_count = len(email_metadata) - len(new_emails)
-
-        sem = asyncio.Semaphore(TRIAGE_CONCURRENCY)
         total = len(new_emails)
-        completed = 0
-        relevant = []
-        skipped = 0
 
         if cached_count > 0:
             yield {
@@ -138,15 +112,31 @@ class PipelineService:
                 "message": f"{cached_count} cached, triaging {total} new...",
             }
 
-        async def triage_one(meta):
-            nonlocal completed, skipped
-            async with sem:
-                is_relevant, reason = await self._triage_single(meta)
-                completed += 1
+        relevant = []
+        skipped = 0
+
+        if total > 0:
+            yield {
+                "type": "progress",
+                "stage": "triage",
+                "pct": 10,
+                "message": f"Classifying {total} emails locally...",
+            }
+
+            # Run local ML triage (batch, ~0.3s for all emails)
+            results = await asyncio.to_thread(
+                self._triage.classify_batch, new_emails
+            )
+
+            for i, (is_relevant, reason, score) in enumerate(results):
+                meta = new_emails[i]
                 if is_relevant:
                     relevant.append(meta)
+                    logger.info(f"[Triage YES] {meta['subject'][:60]} — {reason}")
                 else:
                     skipped += 1
+                    logger.info(f"[Triage NO]  {meta['subject'][:60]} — {reason}")
+
                 # Save to DB
                 if user_id is not None:
                     try:
@@ -155,20 +145,13 @@ class PipelineService:
                         )
                     except Exception as e:
                         logger.warning(f"Failed to save triage for {meta['msg_id']}: {e}")
-                return {
-                    "type": "progress",
-                    "stage": "triage",
-                    "current": completed,
-                    "total": total,
-                    "pct": int(5 + (completed / max(total, 1)) * 30),
-                    "message": f"Triaging {completed}/{total} new...",
-                }
 
-        if total > 0:
-            tasks = [asyncio.create_task(triage_one(m)) for m in new_emails]
-            for coro in asyncio.as_completed(tasks):
-                event = await coro
-                yield event
+            yield {
+                "type": "progress",
+                "stage": "triage",
+                "pct": 35,
+                "message": f"Classified {total} emails: {len(relevant)} relevant",
+            }
 
         yield {
             "type": "stage_complete",
@@ -179,35 +162,6 @@ class PipelineService:
             "relevant_emails": relevant,
             "message": f"Triage done: {len(relevant)} relevant, {skipped} skipped, {cached_count} cached",
         }
-
-    async def _triage_single(self, meta: dict) -> tuple[bool, str]:
-        user_msg = (
-            f"Subject: {meta['subject']}\n"
-            f"From: {meta['from']}\n"
-            f"Snippet: {meta['snippet']}"
-        )
-        try:
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": TRIAGE_PROMPT},
-                    {"role": "user", "content": user_msg},
-                ],
-                temperature=0,
-                max_tokens=100,
-            )
-            content = _strip_json(response.choices[0].message.content.strip())
-            result = json.loads(content)
-            is_ins = result.get("is_insurance", True)
-            reason = result.get("reason", "")
-            if is_ins:
-                logger.info(f"[Triage YES] {meta['subject'][:60]} — {reason}")
-            else:
-                logger.info(f"[Triage NO]  {meta['subject'][:60]} — {reason}")
-            return is_ins, reason
-        except Exception as e:
-            logger.warning(f"Triage failed for '{meta['subject'][:50]}': {e}")
-            return True, "triage_error_default_yes"
 
     # ── Stage 2: Extract ─────────────────────────────
 

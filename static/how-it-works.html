@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>How It Works - Insurance Tracker</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        .hiw-page {
+            max-width: 720px;
+            margin: 0 auto;
+            padding: 48px 24px 80px;
+        }
+        .hiw-back {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--text-secondary);
+            font-size: 13px;
+            text-decoration: none;
+            margin-bottom: 32px;
+            transition: color 0.15s;
+        }
+        .hiw-back:hover { color: var(--text); }
+        .hiw-back svg { width: 16px; height: 16px; }
+
+        .hiw-title {
+            font-size: 32px;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+            margin-bottom: 8px;
+        }
+        .hiw-subtitle {
+            font-size: 16px;
+            color: var(--text-secondary);
+            margin-bottom: 48px;
+            line-height: 1.6;
+        }
+
+        /* ── Pipeline Visualization ── */
+        .pipeline {
+            display: flex;
+            align-items: stretch;
+            gap: 0;
+            margin-bottom: 48px;
+            position: relative;
+        }
+        .pipeline-step {
+            flex: 1;
+            text-align: center;
+            padding: 20px 12px;
+            position: relative;
+        }
+        .pipeline-step::after {
+            content: '';
+            position: absolute;
+            top: 36px;
+            right: -1px;
+            width: 2px;
+            height: 20px;
+            background: var(--border);
+        }
+        .pipeline-step:last-child::after { display: none; }
+
+        .step-icon {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 12px;
+            font-size: 20px;
+        }
+        .step-icon.gmail { background: #fde2e2; color: #e03e3e; }
+        .step-icon.triage { background: var(--blue-bg); color: #2576a5; }
+        .step-icon.extract { background: var(--orange-bg); color: #b35c08; }
+        .step-icon.finalize { background: var(--green-bg); color: #1e7e34; }
+
+        .step-num {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 4px;
+        }
+        .step-label {
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+        .step-desc {
+            font-size: 12px;
+            color: var(--text-secondary);
+            line-height: 1.5;
+        }
+
+        /* ── Connector arrows ── */
+        .pipeline-arrow {
+            display: flex;
+            align-items: center;
+            color: var(--text-muted);
+            font-size: 18px;
+            padding: 0 2px;
+            margin-top: 14px;
+        }
+
+        /* ── Trust Section ── */
+        .trust-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-bottom: 48px;
+        }
+        .trust-card {
+            padding: 20px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--bg);
+        }
+        .trust-card h3 {
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 6px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .trust-card h3 .trust-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--green);
+            flex-shrink: 0;
+        }
+        .trust-card p {
+            font-size: 13px;
+            color: var(--text-secondary);
+            line-height: 1.6;
+        }
+
+        /* ── Section Headers ── */
+        .section-header {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-muted);
+            margin-bottom: 16px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--border-light);
+        }
+
+        /* ── Data Flow Diagram ── */
+        .flow-diagram {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-light);
+            border-radius: 8px;
+            padding: 24px;
+            margin-bottom: 48px;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 12px;
+            line-height: 2;
+            color: var(--text-secondary);
+            overflow-x: auto;
+        }
+        .flow-diagram .highlight { color: var(--text); font-weight: 600; }
+        .flow-diagram .encrypted { color: var(--green); font-weight: 600; }
+        .flow-diagram .dim { color: var(--text-muted); }
+
+        /* ── FAQ ── */
+        .faq-item {
+            padding: 16px 0;
+            border-bottom: 1px solid var(--border-light);
+        }
+        .faq-item:last-child { border-bottom: none; }
+        .faq-q {
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 6px;
+        }
+        .faq-a {
+            font-size: 13px;
+            color: var(--text-secondary);
+            line-height: 1.7;
+        }
+
+        /* ── Search Terms ── */
+        .search-terms {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-light);
+            border-radius: 8px;
+            padding: 20px 24px;
+            margin-bottom: 48px;
+        }
+        .search-terms p {
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin-bottom: 14px;
+            line-height: 1.6;
+        }
+        .term-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .term-chip {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 14px;
+            font-size: 12px;
+            font-weight: 500;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+        }
+        .term-chip.visible { color: var(--text); }
+        .term-chip.extra {
+            display: none;
+        }
+        .terms-toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 4px 12px;
+            border-radius: 14px;
+            font-size: 12px;
+            font-weight: 500;
+            background: var(--border-light);
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .terms-toggle:hover {
+            background: var(--bg-hover);
+            color: var(--text-secondary);
+        }
+        .terms-toggle.expanded { display: none; }
+
+        @media (max-width: 640px) {
+            .pipeline { flex-direction: column; gap: 0; }
+            .pipeline-step::after { display: none; }
+            .pipeline-arrow { justify-content: center; transform: rotate(90deg); padding: 4px 0; }
+            .trust-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="hiw-page">
+        <a href="/" class="hiw-back">
+            <svg viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M11.354 1.646a.5.5 0 0 1 0 .708L5.707 8l5.647 5.646a.5.5 0 0 1-.708.708l-6-6a.5.5 0 0 1 0-.708l6-6a.5.5 0 0 1 .708 0z"/></svg>
+            Back to policies
+        </a>
+
+        <h1 class="hiw-title">How It Works</h1>
+        <p class="hiw-subtitle">
+            Insurance Tracker scans your Gmail for policy documents, extracts the details using AI, and shows them in one dashboard. Your data never leaves your control.
+        </p>
+
+        <!-- Pipeline Visualization -->
+        <div class="section-header">The Pipeline</div>
+        <div class="pipeline">
+            <div class="pipeline-step">
+                <div class="step-icon gmail">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
+                </div>
+                <div class="step-num">Step 1</div>
+                <div class="step-label">Gmail Scan</div>
+                <div class="step-desc">Searches your inbox for insurance-related emails</div>
+            </div>
+            <div class="pipeline-arrow">&rarr;</div>
+            <div class="pipeline-step">
+                <div class="step-icon triage">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                </div>
+                <div class="step-num">Step 2</div>
+                <div class="step-label">AI Triage</div>
+                <div class="step-desc">AI filters out newsletters and marketing, keeps real policies</div>
+            </div>
+            <div class="pipeline-arrow">&rarr;</div>
+            <div class="pipeline-step">
+                <div class="step-icon extract">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                </div>
+                <div class="step-num">Step 3</div>
+                <div class="step-label">Extract</div>
+                <div class="step-desc">Downloads PDFs and extracts policy details with AI</div>
+            </div>
+            <div class="pipeline-arrow">&rarr;</div>
+            <div class="pipeline-step">
+                <div class="step-icon finalize">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
+                </div>
+                <div class="step-num">Step 4</div>
+                <div class="step-label">Deduplicate</div>
+                <div class="step-desc">Merges renewals, fixes statuses, shows your final dashboard</div>
+            </div>
+        </div>
+
+        <!-- Search Terms -->
+        <div class="section-header">What We Search For</div>
+        <div class="search-terms">
+            <p>We run these Gmail searches to find insurance-related emails from the last 2 years:</p>
+            <div class="term-chips" id="term-chips">
+                <span class="term-chip visible">health insurance</span>
+                <span class="term-chip visible">car insurance</span>
+                <span class="term-chip visible">term life</span>
+                <span class="term-chip extra">mediclaim</span>
+                <span class="term-chip extra">motor insurance</span>
+                <span class="term-chip extra">vehicle insurance</span>
+                <span class="term-chip extra">term insurance</span>
+                <span class="term-chip extra">term plan</span>
+                <span class="term-chip extra">subject:"policy copy" from:policybazaar</span>
+                <span class="term-chip extra">subject:"term life" has:attachment</span>
+                <span class="terms-toggle" id="terms-toggle" onclick="toggleTerms()">+7 more</span>
+            </div>
+        </div>
+        <script>
+        function toggleTerms() {
+            document.querySelectorAll('.term-chip.extra').forEach(el => el.style.display = 'inline-block');
+            document.getElementById('terms-toggle').style.display = 'none';
+        }
+        </script>
+
+        <!-- Data Flow -->
+        <div class="section-header">Where Your Data Goes</div>
+        <div class="flow-diagram">
+            <span class="dim">your gmail</span> <span class="highlight">&rarr;</span> <span class="dim">read-only scan (nothing modified)</span><br>
+            <span class="dim">email metadata</span> <span class="highlight">&rarr;</span> <span class="dim">AI triage (is this a policy?)</span> <span class="highlight">&rarr;</span> <span class="dim">yes/no saved as plaintext</span><br>
+            <span class="dim">policy PDFs</span> <span class="highlight">&rarr;</span> <span class="dim">AI extraction</span> <span class="highlight">&rarr;</span> <span class="encrypted">encrypted with your vault key</span> <span class="highlight">&rarr;</span> <span class="dim">database</span><br>
+            <span class="dim">final policies</span> <span class="highlight">&rarr;</span> <span class="encrypted">encrypted</span> <span class="highlight">&rarr;</span> <span class="dim">database</span><br>
+            <br>
+            <span class="dim">vault key:</span> <span class="highlight">never stored</span> <span class="dim">// exists only in memory during refresh</span><br>
+            <span class="dim">PDFs:</span> <span class="highlight">never uploaded</span> <span class="dim">// processed locally, text sent to AI</span><br>
+            <span class="dim">database without key:</span> <span class="encrypted">unreadable encrypted blobs</span>
+        </div>
+
+        <!-- Trust Cards -->
+        <div class="section-header">Privacy & Security</div>
+        <div class="trust-grid">
+            <div class="trust-card">
+                <h3><span class="trust-dot"></span>Read-Only Gmail Access</h3>
+                <p>We only request read permission for your Gmail. No emails are modified, deleted, or sent. You can revoke access anytime from your Google account settings.</p>
+            </div>
+            <div class="trust-card">
+                <h3><span class="trust-dot"></span>Vault Key Encryption</h3>
+                <p>All sensitive policy data is encrypted with AES-256-GCM using a key derived from your vault password. Without it, stored data is gibberish.</p>
+            </div>
+            <div class="trust-card">
+                <h3><span class="trust-dot"></span>No PDF Storage</h3>
+                <p>PDF files are downloaded temporarily to extract text, then kept only on your machine. They are never uploaded to any server or database.</p>
+            </div>
+            <div class="trust-card">
+                <h3><span class="trust-dot"></span>Your Key, Your Data</h3>
+                <p>The vault key is never stored anywhere — not in the database, not in cookies. If you forget it, even we can't read your cached policy data.</p>
+            </div>
+        </div>
+
+        <!-- FAQ -->
+        <div class="section-header">Common Questions</div>
+        <div>
+            <div class="faq-item">
+                <div class="faq-q">What can the app see in my Gmail?</div>
+                <div class="faq-a">Only email metadata (subject, sender, date) and attachments from insurance-related search results. It cannot read your drafts, send emails, or access unrelated messages.</div>
+            </div>
+            <div class="faq-item">
+                <div class="faq-q">What does the AI see?</div>
+                <div class="faq-a">The AI (Grok) receives email subject lines for triage, and truncated PDF text for extraction. It does not receive your email address, password, or full inbox.</div>
+            </div>
+            <div class="faq-item">
+                <div class="faq-q">Why does the first refresh take so long?</div>
+                <div class="faq-a">The first run processes all your insurance emails from scratch — downloading PDFs and running AI extraction on each. Subsequent refreshes are near-instant because results are cached (encrypted) in the database.</div>
+            </div>
+            <div class="faq-item">
+                <div class="faq-q">What happens if I use a wrong vault key?</div>
+                <div class="faq-a">The app will detect the mismatch and show an error. It won't corrupt your data — the encrypted cache remains intact for when you use the correct key.</div>
+            </div>
+            <div class="faq-item">
+                <div class="faq-q">Can I revoke access?</div>
+                <div class="faq-a">Yes. Visit your <a href="https://myaccount.google.com/permissions" target="_blank" style="color: var(--accent);">Google Account permissions</a> and remove Insurance Tracker. Your cached data in the database will remain encrypted and unreadable without your vault key.</div>
+            </div>
+        </div>
+    </div>
+
+    <footer style="text-align:center; padding:24px; color:var(--text-muted); font-size:13px; border-top:1px solid var(--border-light); margin-top:0;">
+        <a href="/how-it-works" style="color:var(--text-secondary); text-decoration:none; margin:0 8px; transition:color 0.15s;">How it works</a>
+        <span style="color:var(--text-muted); margin:0 4px;">&middot;</span>
+        <a href="/privacy" style="color:var(--text-secondary); text-decoration:none; margin:0 8px; transition:color 0.15s;">Privacy</a>
+        <span style="color:var(--text-muted); margin:0 4px;">&middot;</span>
+        <a href="/terms" style="color:var(--text-secondary); text-decoration:none; margin:0 8px; transition:color 0.15s;">Terms</a>
+    </footer>
+</body>
+</html>

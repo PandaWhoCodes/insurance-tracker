@@ -1,0 +1,330 @@
+import os
+import base64
+import re
+import logging
+from pathlib import Path
+from datetime import datetime, timedelta
+
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
+import pdfplumber
+
+logger = logging.getLogger(__name__)
+
+BASE_DIR = Path(__file__).parent.parent
+DATA_DIR = BASE_DIR / "data"
+ATTACHMENTS_DIR = BASE_DIR / "attachments"
+SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+
+
+def get_search_queries():
+    two_years_ago = (datetime.now() - timedelta(days=730)).strftime("%Y/%m/%d")
+    base_terms = [
+        "health insurance",
+        "mediclaim",
+        "car insurance",
+        "motor insurance",
+        "vehicle insurance",
+        "term insurance",
+        "term plan",
+        "term life",
+    ]
+    queries = [f"{term} after:{two_years_ago}" for term in base_terms]
+    # Also search for older term life docs without date filter
+    queries.append('subject:"policy copy" from:policybazaar')
+    queries.append('subject:"term life" has:attachment')
+    return queries
+
+
+class GmailService:
+    def __init__(self, user_email: str):
+        self.user_email = user_email
+        self.token_path = DATA_DIR / f"tokens/{user_email}.json"
+        self.user_attachments_dir = ATTACHMENTS_DIR / user_email.replace("@", "_at_")
+        self.user_attachments_dir.mkdir(parents=True, exist_ok=True)
+        self.service = self._build_service()
+
+    def _build_service(self):
+        if not self.token_path.exists():
+            raise Exception("No credentials found. Please re-authenticate.")
+
+        creds = Credentials.from_authorized_user_file(str(self.token_path), SCOPES)
+
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+                with open(self.token_path, "w") as f:
+                    f.write(creds.to_json())
+            else:
+                raise Exception("Credentials expired. Please re-authenticate.")
+
+        return build("gmail", "v1", credentials=creds)
+
+    def fetch_insurance_emails(self) -> list[dict]:
+        """Full pipeline: search → fetch details → download PDFs → extract text.
+        Returns list of {email_subject, email_from, email_date, pdf_filename, pdf_text}
+        """
+        metadata = self.fetch_email_metadata()
+        results = []
+        for i, meta in enumerate(metadata, 1):
+            logger.info(f"[{i}/{len(metadata)}] Downloading: {meta['subject'][:50]}")
+            docs = self.fetch_document_text(meta["msg_id"])
+            results.extend(docs)
+        return results
+
+    def fetch_email_metadata(self) -> list[dict]:
+        """Step 1: Search Gmail and return lightweight metadata for all emails.
+        Uses batch API to fetch metadata in chunks of 25 with retry + backoff.
+        Returns list of {msg_id, subject, from, date, snippet}. No PDF download.
+        """
+        all_msg_ids = set()
+        queries = get_search_queries()
+
+        for query in queries:
+            logger.info(f"Searching: '{query}'")
+            messages = self._search_emails(query, max_results=30)
+            all_msg_ids.update(m["id"] for m in messages)
+
+        logger.info(f"Total unique emails found: {len(all_msg_ids)}")
+
+        if not all_msg_ids:
+            return []
+
+        results = {}  # msg_id -> parsed metadata
+        remaining = list(all_msg_ids)
+        batch_size = 25
+        max_retries = 5
+
+        for attempt in range(max_retries + 1):
+            if not remaining:
+                break
+
+            if attempt > 0:
+                delay = min(2 ** attempt, 30)
+                logger.info(f"Retry {attempt}/{max_retries}: {len(remaining)} remaining, waiting {delay}s...")
+                import time
+                time.sleep(delay)
+
+            failed = []
+
+            for batch_start in range(0, len(remaining), batch_size):
+                batch_chunk = remaining[batch_start:batch_start + batch_size]
+                batch_results = {}
+                batch_failed = []
+
+                def make_callback(mid):
+                    def cb(request_id, response, exception):
+                        if exception:
+                            batch_failed.append(mid)
+                            return
+                        batch_results[mid] = response
+                    return cb
+
+                batch = self.service.new_batch_http_request()
+                for mid in batch_chunk:
+                    batch.add(
+                        self.service.users().messages().get(
+                            userId="me", id=mid, format="metadata",
+                            metadataHeaders=["Subject", "From", "Date"],
+                        ),
+                        callback=make_callback(mid),
+                    )
+                batch.execute()
+
+                for mid, msg in batch_results.items():
+                    headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
+                    results[mid] = {
+                        "msg_id": mid,
+                        "subject": headers.get("Subject", "(no subject)"),
+                        "from": headers.get("From", ""),
+                        "date": headers.get("Date", ""),
+                        "snippet": msg.get("snippet", ""),
+                    }
+
+                failed.extend(batch_failed)
+
+                # Brief pause between batches to avoid rate limits
+                if batch_start + batch_size < len(remaining):
+                    import time
+                    time.sleep(0.3)
+
+            logger.info(f"Attempt {attempt + 1}: fetched {len(results)}/{len(all_msg_ids)} metadata, {len(failed)} failed")
+            remaining = failed
+
+        if remaining:
+            logger.warning(f"Could not fetch metadata for {len(remaining)} emails after {max_retries + 1} attempts")
+
+        return list(results.values())
+
+    def fetch_document_text(self, msg_id: str) -> list[dict]:
+        """Step 2: For a single message, download PDFs and extract text.
+        Returns list of {email_subject, email_from, email_date, pdf_filename, pdf_text}.
+        """
+        try:
+            detail = self._get_message_detail(msg_id)
+        except Exception as e:
+            logger.warning(f"Failed to fetch message {msg_id}: {e}")
+            return []
+
+        results = []
+
+        # Download attachments
+        parts = detail["payload"].get("parts", [])
+        if not parts and detail["payload"].get("body"):
+            parts = [detail["payload"]]
+
+        downloaded = self._download_attachments(msg_id, parts, detail["subject"])
+
+        for filepath in downloaded:
+            if filepath.lower().endswith(".pdf"):
+                pdf_text = self._extract_text_from_pdf(filepath)
+                if pdf_text and len(pdf_text.strip()) > 100:
+                    results.append({
+                        "email_subject": detail["subject"],
+                        "email_from": detail["from"],
+                        "email_date": detail["date"],
+                        "pdf_filename": Path(filepath).name,
+                        "pdf_text": pdf_text,
+                    })
+
+        # Also check email body for policy info (some come without PDFs)
+        body_text = self._extract_body_text(detail["payload"])
+        if body_text and len(body_text.strip()) > 200:
+            body_lower = body_text.lower()
+            if any(kw in body_lower for kw in [
+                "policy no", "policy number", "sum insured", "premium",
+                "policy period", "insured value"
+            ]):
+                results.append({
+                    "email_subject": detail["subject"],
+                    "email_from": detail["from"],
+                    "email_date": detail["date"],
+                    "pdf_filename": f"email_body_{msg_id}",
+                    "pdf_text": body_text[:10000],
+                })
+
+        return results
+
+    def _search_emails(self, query: str, max_results: int = 50) -> list[dict]:
+        messages = []
+        try:
+            result = self.service.users().messages().list(
+                userId="me", q=query, maxResults=max_results
+            ).execute()
+            messages = result.get("messages", [])
+
+            while "nextPageToken" in result and len(messages) < max_results:
+                result = self.service.users().messages().list(
+                    userId="me",
+                    q=query,
+                    maxResults=max_results - len(messages),
+                    pageToken=result["nextPageToken"],
+                ).execute()
+                messages.extend(result.get("messages", []))
+        except Exception as e:
+            logger.error(f"Error searching for '{query}': {e}")
+
+        return messages
+
+    def _get_message_detail(self, msg_id: str) -> dict:
+        msg = self.service.users().messages().get(
+            userId="me", id=msg_id, format="full"
+        ).execute()
+
+        headers = {h["name"]: h["value"] for h in msg["payload"].get("headers", [])}
+
+        return {
+            "id": msg_id,
+            "subject": headers.get("Subject", "(no subject)"),
+            "from": headers.get("From", ""),
+            "date": headers.get("Date", ""),
+            "snippet": msg.get("snippet", ""),
+            "payload": msg["payload"],
+        }
+
+    def _download_attachments(self, msg_id: str, parts: list, email_subject: str) -> list[str]:
+        downloaded = []
+
+        def process_parts(parts_list):
+            for part in parts_list:
+                filename = part.get("filename", "")
+                mime_type = part.get("mimeType", "")
+
+                if part.get("parts"):
+                    process_parts(part["parts"])
+
+                if not filename:
+                    continue
+
+                # Only PDFs
+                if not (
+                    mime_type.startswith("application/pdf")
+                    or mime_type.startswith("application/octet-stream")
+                    or filename.lower().endswith(".pdf")
+                ):
+                    continue
+
+                attachment_id = part.get("body", {}).get("attachmentId")
+                if not attachment_id:
+                    continue
+
+                try:
+                    att = self.service.users().messages().attachments().get(
+                        userId="me", messageId=msg_id, id=attachment_id
+                    ).execute()
+
+                    data = base64.urlsafe_b64decode(att["data"])
+
+                    # Ensure PDF files have .pdf extension
+                    if mime_type.startswith("application/pdf") and not filename.lower().endswith(".pdf"):
+                        filename = filename + ".pdf"
+
+                    safe_subject = re.sub(r'[^\w\s-]', '', email_subject)[:50].strip()
+                    safe_filename = f"{safe_subject}__{filename}"
+                    filepath = self.user_attachments_dir / safe_filename
+
+                    counter = 1
+                    while filepath.exists():
+                        filepath = self.user_attachments_dir / f"{filepath.stem}_{counter}{filepath.suffix}"
+                        counter += 1
+
+                    with open(filepath, "wb") as f:
+                        f.write(data)
+
+                    downloaded.append(str(filepath))
+                    logger.info(f"Saved: {filepath.name}")
+                except Exception as e:
+                    logger.warning(f"Error downloading {filename}: {e}")
+
+        process_parts(parts)
+        return downloaded
+
+    def _extract_text_from_pdf(self, filepath: str) -> str:
+        text = ""
+        try:
+            with pdfplumber.open(filepath) as pdf:
+                for page in pdf.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        text += page_text + "\n"
+        except Exception as e:
+            logger.warning(f"Error reading PDF {filepath}: {e}")
+        return text
+
+    def _extract_body_text(self, payload: dict) -> str:
+        text = ""
+
+        def walk_parts(part):
+            nonlocal text
+            mime = part.get("mimeType", "")
+            if mime == "text/plain":
+                data = part.get("body", {}).get("data", "")
+                if data:
+                    text += base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+            if part.get("parts"):
+                for p in part["parts"]:
+                    walk_parts(p)
+
+        walk_parts(payload)
+        return text

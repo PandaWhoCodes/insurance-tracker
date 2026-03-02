@@ -1,7 +1,6 @@
 """Tests for helper methods in services/gmail_service.py."""
 
 import base64
-import pytest
 from unittest.mock import patch
 
 from services.gmail_service import GmailService, get_search_queries

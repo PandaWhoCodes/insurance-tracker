@@ -1,6 +1,5 @@
 """Tests for pure functions in services/pipeline_service.py."""
 
-import pytest
 from unittest.mock import patch
 from freezegun import freeze_time
 

@@ -1,7 +1,7 @@
 """Tests for FastAPI routes in app.py."""
 
 import pytest
-from unittest.mock import patch, AsyncMock, MagicMock
+from unittest.mock import patch, AsyncMock
 
 
 @pytest.fixture

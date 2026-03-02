@@ -1,6 +1,6 @@
 import base64
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 
 def _make_policy(**overrides):

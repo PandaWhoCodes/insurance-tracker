@@ -22,3 +22,12 @@ exclude_lines = [
     "pragma: no cover",
     "if __name__",
 ]
+
+[tool.ruff]
+exclude = [
+    "demo_triage.py",
+    "demo_triage_v2.py",
+    "fetch_insurance_emails.py",
+    "init_db.py",
+    "devflow/",
+]

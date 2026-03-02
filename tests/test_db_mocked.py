@@ -1,6 +1,5 @@
 """Tests for services/db_service.py domain functions with mocked DB."""
 
-import json
 import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
 
@@ -13,7 +12,6 @@ from services.db_service import (
     get_cached_extractions,
     save_final_policies,
     derive_key,
-    encrypt,
     _hash_vault_key,
 )
 

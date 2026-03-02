@@ -1,0 +1,17 @@
+.env
+.git
+.github
+.claude
+.pytest_cache
+.coverage
+__pycache__
+*.pyc
+htmlcov/
+coverage.xml
+data/
+attachments/
+devflow/
+demo_*.py
+fetch_insurance_emails.py
+init_db.py
+tests/

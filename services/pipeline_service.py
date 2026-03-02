@@ -14,6 +14,27 @@ logger = logging.getLogger(__name__)
 
 EXTRACT_CONCURRENCY = 3
 
+# LIC plan table number → human-readable name mapping
+LIC_PLAN_NAMES = {
+    "814": "Jeevan Anand (Endowment)",
+    "820": "Jeevan Umang (Whole Life)",
+    "836": "Jeevan Saral (Endowment)",
+    "842": "Jeevan Labh",
+    "843": "Jeevan Lakshya",
+    "844": "Jeevan Pragati",
+    "845": "Jeevan Shiromani",
+    "849": "Jeevan Azad",
+    "914": "New Endowment Plan",
+    "935": "Nivesh Plus (ULIP)",
+    "936": "Bima Jyoti (Savings)",
+    "941": "Dhan Sanchay (Savings)",
+    "945": "Jeevan Amar (Term Life)",
+    "946": "SIIP (ULIP)",
+    "954": "Bima Ratna (Endowment)",
+    "955": "Amritbaal (Children)",
+    "956": "Jeevan Utsav (Whole Life)",
+}
+
 EXTRACT_PROMPT = """You are an expert insurance document analyzer. Given extracted text from an insurance policy PDF or email, extract structured policy information.
 
 Return a JSON object with these fields:
@@ -65,6 +86,32 @@ Your job:
 4. CLEAN: Remove any entries that are clearly not real policies (no policy_number AND no provider).
 
 Return ONLY a JSON array of the final deduplicated policies. Same schema as input. No explanations."""
+
+
+PASSWORD_HINTS = {
+    "icicilombard": "Your date of birth in DDMMYYYY format (e.g., 15061990)",
+    "icici lombard": "Your date of birth in DDMMYYYY format (e.g., 15061990)",
+    "hdfc ergo": "Your date of birth in DDMMYYYY format (e.g., 15061990)",
+    "hdfcergo": "Your date of birth in DDMMYYYY format (e.g., 15061990)",
+    "bajaj allianz": "Your date of birth in DDMMYYYY format (e.g., 15061990)",
+    "bajajallianz": "Your date of birth in DDMMYYYY format (e.g., 15061990)",
+    "lic": "Your date of birth in DDMMYYYY format (e.g., 15061990)",
+    "sbi": "Your date of birth in DDMMYYYY format (e.g., 15061990)",
+    "tata aig": "Your date of birth in DDMMYYYY format (e.g., 15061990)",
+    "new india": "Your date of birth in DDMMYYYY format (e.g., 15061990)",
+    "star health": "Your date of birth in DDMMYYYY format (e.g., 15061990)",
+    "care health": "Your date of birth in DDMMYYYY format (e.g., 15061990)",
+    "oriental": "Your date of birth in DDMMYYYY format (e.g., 15061990)",
+}
+
+
+def _get_password_hint(email_from: str, provider: str) -> str:
+    """Return a password hint based on the insurer."""
+    combined = ((email_from or "") + " " + (provider or "")).lower()
+    for key, hint in PASSWORD_HINTS.items():
+        if key in combined:
+            return hint
+    return "Usually your date of birth (DDMMYYYY) or PAN number"
 
 
 def _strip_json(content: str) -> str:
@@ -266,6 +313,7 @@ class PipelineService:
 
     async def _grok_extract(self, doc: dict) -> dict | None:
         """Send a single document's text to Grok for extraction."""
+        is_locked = doc.get("_password_protected", False)
         truncated = doc["pdf_text"][:15000]
         user_msg = (
             f"Filename: {doc['pdf_filename']}\n"
@@ -287,6 +335,14 @@ class PipelineService:
             if result and not result.get("skip"):
                 result["source_pdf"] = doc["pdf_filename"]
                 result["source_email"] = doc["email_subject"]
+                if is_locked:
+                    result["password_protected"] = True
+                    result["locked_pdf_path"] = doc.get("_locked_pdf_path", "")
+                    # Prefer hint extracted from email body, fall back to generic
+                    email_hint = doc.get("_password_hint", "")
+                    result["password_hint"] = email_hint or _get_password_hint(
+                        doc.get("email_from", ""), result.get("provider", "")
+                    )
                 return result
         except json.JSONDecodeError as e:
             logger.error(f"JSON parse error for {doc['pdf_filename']}: {e}")
@@ -341,6 +397,9 @@ class PipelineService:
                     continue
                 if winner.get(key) is None and loser.get(key) is not None:
                     winner[key] = loser[key]
+            # If we have a non-locked version, drop the locked flag
+            if loser.get("password_protected") is None and winner.get("password_protected"):
+                del winner["password_protected"]
             # Prefer more detailed insured_members (more non-null fields)
             w_members = winner.get("insured_members") or []
             l_members = loser.get("insured_members") or []
@@ -389,4 +448,9 @@ class PipelineService:
                     p["status"] = "ACTIVE" if end_date >= today else "EXPIRED"
                 except (ValueError, TypeError):
                     pass
+            # Enrich LIC plan numbers with human-readable names
+            plan = p.get("plan_name") or ""
+            provider = (p.get("provider") or "").lower()
+            if plan.strip() in LIC_PLAN_NAMES and "lic" in provider:
+                p["plan_name"] = LIC_PLAN_NAMES[plan.strip()]
         return result

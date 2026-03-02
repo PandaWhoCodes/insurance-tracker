@@ -341,9 +341,11 @@ async def refresh_stream(request: Request, vault_key: str = "Ashish"):
                 except Exception as e:
                     logger.warning(f"Failed to load cached extractions: {e}")
 
+            logger.info(f"Finalizing {len(raw_policies)} new + {len(cached_extractions)} cached")
             final_policies = await pipeline.finalize(
                 raw_policies, existing_policies=cached_extractions
             )
+            logger.info(f"Finalized: {len(final_policies)} policies")
 
             # Save final policies to DB (encrypted)
             if vault_key_derived is not None and user_id is not None:
@@ -351,10 +353,12 @@ async def refresh_stream(request: Request, vault_key: str = "Ashish"):
                     await db_service.save_final_policies(
                         user_id, final_policies, vault_key_derived
                     )
+                    logger.info("Saved final policies to DB")
                 except Exception as e:
                     logger.warning(f"Failed to save final policies to DB: {e}")
 
             cache.set(email, final_policies)
+            logger.info(f"Sending done event with {len(final_policies)} policies")
             yield sse_event("done", {
                 "policies": final_policies,
                 "fetched_at": datetime.now().isoformat(),
@@ -373,6 +377,113 @@ async def refresh_stream(request: Request, vault_key: str = "Ashish"):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.post("/api/policies/unlock")
+async def unlock_pdf(request: Request):
+    """Try to open a password-protected PDF with the user-provided password."""
+    email = request.session.get("user_email")
+    if not email:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+
+    body = await request.json()
+    pdf_path = body.get("pdf_path", "")
+    password = body.get("password", "")
+    vault_key = body.get("vault_key", "Ashish")
+
+    if not pdf_path or not password:
+        return JSONResponse({"error": "Missing pdf_path or password"}, status_code=400)
+
+    # Security: ensure the path is within the attachments directory
+    import pdfplumber
+    attachments_dir = str(BASE_DIR / "attachments")
+    resolved = str(Path(pdf_path).resolve())
+    if not resolved.startswith(attachments_dir):
+        return JSONResponse({"error": "Invalid path"}, status_code=403)
+
+    if not Path(pdf_path).exists():
+        return JSONResponse({"error": "PDF file not found"}, status_code=404)
+
+    # Try opening with password
+    try:
+        text = ""
+        with pdfplumber.open(pdf_path, password=password) as pdf:
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
+
+        if not text or len(text.strip()) < 50:
+            return JSONResponse({"error": "Password accepted but no text could be extracted"}, status_code=422)
+
+        # Send to Grok for extraction
+        pipeline = PipelineService()
+        doc = {
+            "pdf_filename": Path(pdf_path).name,
+            "email_subject": body.get("email_subject", ""),
+            "pdf_text": text,
+        }
+        result = await pipeline._grok_extract(doc)
+
+        if not result:
+            return JSONResponse({"error": "Could not extract policy details from PDF"}, status_code=422)
+
+        # Remove the locked flag
+        result.pop("password_protected", None)
+        result.pop("locked_pdf_path", None)
+        result.pop("password_hint", None)
+
+        # Fix status based on today's date
+        end = result.get("policy_end")
+        if end:
+            try:
+                from datetime import datetime as dt
+                end_date = dt.strptime(end, "%Y-%m-%d").date()
+                result["status"] = "ACTIVE" if end_date >= dt.now().date() else "EXPIRED"
+            except (ValueError, TypeError):
+                pass
+
+        # Update cache — replace the locked policy, remove duplicates
+        cached = cache.get(email)
+        if cached:
+            policies = cached["policies"]
+            result_pn = result.get("policy_number", "")
+
+            # Remove any locked entries that match this policy number
+            policies = [
+                p for p in policies
+                if not (p.get("password_protected") and p.get("policy_number") == result_pn)
+            ]
+
+            # Also remove any existing non-locked duplicate (from email body extraction)
+            if result_pn:
+                policies = [
+                    p for p in policies
+                    if p.get("policy_number") != result_pn
+                ]
+
+            # Add the freshly unlocked policy
+            policies.append(result)
+            cache.set(email, policies)
+
+        # Also update DB if available
+        user_name = request.session.get("user_name", email)
+        if turso_db._client is not None:
+            try:
+                user_id = await db_service.get_or_create_user(email, user_name)
+                vault_key_derived = await db_service.verify_vault_key(user_id, vault_key)
+                await db_service.save_final_policies(user_id, cache.get(email)["policies"], vault_key_derived)
+            except Exception as e:
+                logger.warning(f"Failed to update DB after unlock: {e}")
+
+        return {"policy": result, "message": "PDF unlocked successfully"}
+
+    except Exception as e:
+        err_repr = repr(e).lower()
+        if "password" in err_repr:
+            return JSONResponse({"error": "Wrong password. Please try again."}, status_code=401)
+        logger.error(f"Unlock failed: {e}", exc_info=True)
+        return JSONResponse({"error": f"Failed to read PDF: {str(e)}"}, status_code=500)
 
 
 if __name__ == "__main__":

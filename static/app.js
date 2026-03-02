@@ -43,7 +43,7 @@ function showMainScreen(user) {
 async function loadPolicies() {
     const data = await API.policies();
     if (data && data.policies && data.policies.length > 0) {
-        allPolicies = data.policies.filter(p => p.premium && p.sum_insured && p.policy_end);
+        allPolicies = data.policies.filter(p => p.policy_number || p.policy_end);
         renderSummary(allPolicies);
         renderFiltered();
         updateCacheInfo(data.fetched_at, data.from_cache);
@@ -120,7 +120,7 @@ function refreshPolicies() {
 
         setTimeout(() => {
             hideProgress();
-            const complete = (d.policies || []).filter(p => p.premium && p.sum_insured && p.policy_end);
+            const complete = (d.policies || []).filter(p => p.policy_number || p.policy_end);
             if (complete.length > 0) {
                 allPolicies = complete;
                 renderSummary(allPolicies);
@@ -257,6 +257,7 @@ function renderPolicies(policies) {
 function renderCard(p, index) {
     const typeLabels = { health: 'Health', car: 'Car', term_life: 'Term Life' };
     const type = p.type || 'unknown';
+    const isLocked = p.password_protected === true;
     const status = (p.status || 'UNKNOWN').toUpperCase();
     const badgeClass = status === 'ACTIVE' ? 'badge-active' : status === 'EXPIRED' ? 'badge-expired' : 'badge-unknown';
 
@@ -272,6 +273,23 @@ function renderCard(p, index) {
         }
     } else {
         daysHtml = `<span>---</span>`;
+    }
+
+    if (isLocked) {
+        return `
+        <div class="policy-card locked" data-type="${type}" onclick="openModal(${index})">
+            <div class="card-top">
+                <span class="type-icon ${type}">${typeLabels[type] ? typeLabels[type][0] : '?'}</span>
+                <span class="badge badge-locked">LOCKED</span>
+            </div>
+            <div class="card-name">${p.provider || 'Unknown Provider'}</div>
+            <div class="card-locked-msg">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+                PDF is password-protected
+            </div>
+            <div class="card-locked-detail">We found this policy but couldn't read the PDF. Check your email for the password.</div>
+            <div class="card-pn">${p.policy_number || '---'}</div>
+        </div>`;
     }
 
     return `
@@ -315,6 +333,21 @@ function openModal(index) {
         .join(', ');
 
     let rows = '';
+    if (p.password_protected) {
+        const hint = p.password_hint || 'Usually your date of birth (DDMMYYYY) or PAN number';
+        rows += `<div class="modal-locked-banner">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+            This policy's PDF is password-protected. Enter the password below to unlock full details.
+        </div>
+        <div class="unlock-form" id="unlock-form">
+            <div class="unlock-hint">Hint: ${hint}</div>
+            <div class="unlock-input-row">
+                <input type="text" id="unlock-password" class="unlock-input" placeholder="Enter PDF password" autocomplete="off" />
+                <button class="unlock-btn" onclick="unlockPdf(${index})">Unlock</button>
+            </div>
+            <div class="unlock-error hidden" id="unlock-error"></div>
+        </div>`;
+    }
     rows += propRow('Provider', p.provider);
     rows += propRow('Plan', p.plan_name);
     rows += propRow('Policy No', p.policy_number);
@@ -341,6 +374,63 @@ function openModal(index) {
             <div class="modal-body">${rows}</div>
         </div>
     </div>`;
+
+    // Focus the password input if present
+    const pwInput = document.getElementById('unlock-password');
+    if (pwInput) {
+        pwInput.focus();
+        pwInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') unlockPdf(index);
+        });
+    }
+}
+
+async function unlockPdf(index) {
+    const filtered = getFilteredPolicies();
+    const p = filtered[index];
+    if (!p) return;
+
+    const password = document.getElementById('unlock-password').value.trim();
+    if (!password) return;
+
+    const btn = document.querySelector('.unlock-btn');
+    const errEl = document.getElementById('unlock-error');
+    btn.disabled = true;
+    btn.textContent = 'Unlocking...';
+    errEl.classList.add('hidden');
+
+    try {
+        const res = await fetch('/api/policies/unlock', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                pdf_path: p.locked_pdf_path,
+                password: password,
+                email_subject: p.source_email || '',
+                vault_key: 'Ashish',
+            }),
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+            errEl.textContent = data.error || 'Unlock failed';
+            errEl.classList.remove('hidden');
+            btn.disabled = false;
+            btn.textContent = 'Unlock';
+            return;
+        }
+
+        // Close modal and reload policies from server (cache was updated)
+        closeModal();
+        await loadPolicies();
+
+    } catch (e) {
+        errEl.textContent = 'Network error. Please try again.';
+        errEl.classList.remove('hidden');
+        btn.disabled = false;
+        btn.textContent = 'Unlock';
+    }
 }
 
 function closeModal(event) {

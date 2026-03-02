@@ -508,6 +508,93 @@ body {
 .badge-active { background: var(--green-bg); color: #1e7e34; }
 .badge-expired { background: var(--red-bg); color: var(--red); }
 .badge-unknown { background: var(--border-light); color: var(--text-secondary); }
+.badge-locked { background: var(--orange-bg); color: var(--orange); }
+
+/* Locked card */
+.policy-card.locked {
+    opacity: 0.85;
+    border-style: dashed;
+}
+.card-locked-msg {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--orange);
+    margin-bottom: 8px;
+}
+.card-locked-detail {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+    margin-bottom: 12px;
+}
+.modal-locked-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 10px 12px;
+    background: var(--orange-bg);
+    color: var(--orange);
+    border-radius: var(--radius);
+    font-size: 13px;
+    line-height: 1.4;
+    margin-bottom: 12px;
+}
+.modal-locked-banner svg {
+    flex-shrink: 0;
+    margin-top: 1px;
+}
+.unlock-form {
+    margin-bottom: 16px;
+    padding: 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+.unlock-hint {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+.unlock-input-row {
+    display: flex;
+    gap: 8px;
+}
+.unlock-input {
+    flex: 1;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 14px;
+    font-family: var(--font);
+    outline: none;
+}
+.unlock-input:focus {
+    border-color: var(--accent);
+}
+.unlock-btn {
+    padding: 8px 16px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.unlock-btn:hover { background: var(--accent-hover); }
+.unlock-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+.unlock-error {
+    margin-top: 8px;
+    font-size: 13px;
+    color: var(--red);
+}
 
 .card-name {
     font-size: 15px;

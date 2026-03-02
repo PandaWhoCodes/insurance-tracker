@@ -26,9 +26,14 @@ def get_search_queries():
         "car insurance",
         "motor insurance",
         "vehicle insurance",
+        "bike insurance",
+        "two wheeler insurance",
         "term insurance",
         "term plan",
         "term life",
+        "life insurance policy",
+        "home insurance",
+        "travel insurance",
     ]
     queries = [f"{term} after:{two_years_ago}" for term in base_terms]
     # Also search for older term life docs without date filter
@@ -178,7 +183,7 @@ class GmailService:
 
         for filepath in downloaded:
             if filepath.lower().endswith(".pdf"):
-                pdf_text = self._extract_text_from_pdf(filepath)
+                pdf_text, is_locked = self._extract_text_from_pdf(filepath)
                 if pdf_text and len(pdf_text.strip()) > 100:
                     results.append({
                         "email_subject": detail["subject"],
@@ -186,6 +191,19 @@ class GmailService:
                         "email_date": detail["date"],
                         "pdf_filename": Path(filepath).name,
                         "pdf_text": pdf_text,
+                    })
+                elif is_locked:
+                    # Password-protected PDF — extract hint from email body/HTML
+                    hint = self._extract_password_hint(detail["payload"])
+                    results.append({
+                        "email_subject": detail["subject"],
+                        "email_from": detail["from"],
+                        "email_date": detail["date"],
+                        "pdf_filename": Path(filepath).name,
+                        "pdf_text": f"[PASSWORD-PROTECTED PDF]\nFilename: {Path(filepath).name}\nEmail subject: {detail['subject']}",
+                        "_password_protected": True,
+                        "_locked_pdf_path": filepath,
+                        "_password_hint": hint,
                     })
 
         # Also check email body for policy info (some come without PDFs)
@@ -280,8 +298,10 @@ class GmailService:
                     if mime_type.startswith("application/pdf") and not filename.lower().endswith(".pdf"):
                         filename = filename + ".pdf"
 
+                    # Sanitize filename — replace path separators and special chars
+                    safe_filename_part = re.sub(r'[/\\]', '_', filename)
                     safe_subject = re.sub(r'[^\w\s-]', '', email_subject)[:50].strip()
-                    safe_filename = f"{safe_subject}__{filename}"
+                    safe_filename = f"{safe_subject}__{safe_filename_part}"
                     filepath = self.user_attachments_dir / safe_filename
 
                     counter = 1
@@ -300,7 +320,8 @@ class GmailService:
         process_parts(parts)
         return downloaded
 
-    def _extract_text_from_pdf(self, filepath: str) -> str:
+    def _extract_text_from_pdf(self, filepath: str) -> tuple[str, bool]:
+        """Extract text from PDF. Returns (text, is_password_protected)."""
         text = ""
         try:
             with pdfplumber.open(filepath) as pdf:
@@ -309,8 +330,68 @@ class GmailService:
                     if page_text:
                         text += page_text + "\n"
         except Exception as e:
-            logger.warning(f"Error reading PDF {filepath}: {e}")
-        return text
+            err_name = type(e).__name__
+            err_repr = repr(e).lower()
+            if "password" in err_repr or "PDFPasswordIncorrect" in err_name:
+                logger.warning(f"Password-protected PDF (cannot extract): {Path(filepath).name}")
+                return "", True
+            else:
+                logger.warning(f"Error reading PDF {filepath}: {err_name}: {e}")
+        return text, False
+
+    def _extract_password_hint(self, payload: dict) -> str:
+        """Extract password hint from email body (plain text or HTML)."""
+        # Try plain text first
+        plain = self._extract_body_text(payload)
+        hint = self._find_hint_in_text(plain) if plain else ""
+        if hint:
+            return hint
+
+        # Fall back to HTML body
+        html = self._extract_html_body(payload)
+        if html:
+            # Strip HTML tags
+            clean = re.sub(r'<[^>]+>', ' ', html)
+            clean = re.sub(r'\s+', ' ', clean)
+            return self._find_hint_in_text(clean)
+        return ""
+
+    def _find_hint_in_text(self, text: str) -> str:
+        """Find password-related hint in text."""
+        lower = text.lower()
+        # Look for the most specific password instruction
+        for marker in ["the password consists", "password is ", "password to view", "password to open"]:
+            idx = lower.find(marker)
+            if idx >= 0:
+                snippet = text[idx:idx + 300].strip()
+                # Truncate at example end or noise
+                for end in [". Or If", ". In case", ". For any", ". If you face"]:
+                    pos = snippet.find(end)
+                    if pos > 30:
+                        snippet = snippet[:pos + 1]
+                        break
+                return snippet
+        # Generic fallback — grab around "password"
+        idx = lower.find("password")
+        if idx >= 0:
+            snippet = text[idx:idx + 200].strip()
+            return snippet
+        return ""
+
+    def _extract_html_body(self, payload: dict) -> str:
+        """Extract HTML body from email payload."""
+        def walk(part):
+            mime = part.get("mimeType", "")
+            if mime == "text/html":
+                data = part.get("body", {}).get("data", "")
+                if data:
+                    return base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+            for p in part.get("parts", []):
+                result = walk(p)
+                if result:
+                    return result
+            return None
+        return walk(payload) or ""
 
     def _extract_body_text(self, payload: dict) -> str:
         text = ""

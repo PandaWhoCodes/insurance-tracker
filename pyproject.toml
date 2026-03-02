@@ -1,0 +1,24 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "slow: marks tests requiring ML model download (deselect with '-m not slow')",
+]
+addopts = "--strict-markers -v"
+
+[tool.coverage.run]
+source = ["services", "app"]
+omit = [
+    "services/grok_service.py",
+    "fetch_insurance_emails.py",
+    "init_db.py",
+    "demo_*.py",
+]
+
+[tool.coverage.report]
+fail_under = 45
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__",
+]

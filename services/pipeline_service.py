@@ -392,14 +392,18 @@ class PipelineService:
 
         def _merge(winner, loser):
             """Fill null fields in winner from loser."""
+            skip_keys = ('status', 'source_pdf', 'source_email',
+                         'password_protected', 'locked_pdf_path', 'password_hint')
             for key in loser:
-                if key in ('status', 'source_pdf', 'source_email'):
+                if key in skip_keys:
                     continue
                 if winner.get(key) is None and loser.get(key) is not None:
                     winner[key] = loser[key]
-            # If we have a non-locked version, drop the locked flag
-            if loser.get("password_protected") is None and winner.get("password_protected"):
-                del winner["password_protected"]
+            # If either side is non-locked, drop the locked flag from winner
+            if not loser.get("password_protected") or not winner.get("password_protected"):
+                winner.pop("password_protected", None)
+                winner.pop("locked_pdf_path", None)
+                winner.pop("password_hint", None)
             # Prefer more detailed insured_members (more non-null fields)
             w_members = winner.get("insured_members") or []
             l_members = loser.get("insured_members") or []

@@ -7,3 +7,7 @@ __pycache__/
 *.pyc
 .DS_Store
 .claude/
+htmlcov/
+.coverage
+coverage.xml
+.pytest_cache/

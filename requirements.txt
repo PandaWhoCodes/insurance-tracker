@@ -10,4 +10,3 @@ itsdangerous
 python-multipart
 libsql-client
 cryptography
-sentence-transformers

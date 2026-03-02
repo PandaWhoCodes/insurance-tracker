@@ -7,8 +7,6 @@ Replaces Grok API triage with cosine similarity against reference phrases.
 import logging
 import time
 
-from sentence_transformers import SentenceTransformer, util
-
 logger = logging.getLogger(__name__)
 
 # ── Positive reference phrases (what a real policy document looks like) ──
@@ -75,6 +73,7 @@ class TriageService:
     def _ensure_loaded(self):
         if self._model is not None:
             return
+        from sentence_transformers import SentenceTransformer
         t0 = time.time()
         self._model = SentenceTransformer("all-MiniLM-L6-v2")
         self._pos_emb = self._model.encode(POSITIVE_PHRASES, convert_to_tensor=True)
@@ -103,6 +102,7 @@ class TriageService:
         t0 = time.time()
         email_emb = self._model.encode(texts, convert_to_tensor=True, batch_size=32)
 
+        from sentence_transformers import util
         pos_scores = util.cos_sim(email_emb, self._pos_emb).max(dim=1).values
         neg_scores = util.cos_sim(email_emb, self._neg_emb).max(dim=1).values
         elapsed = time.time() - t0

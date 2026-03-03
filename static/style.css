@@ -471,6 +471,29 @@ body {
 .policy-card[data-type="car"] { border-top-color: var(--blue); }
 .policy-card[data-type="term_life"] { border-top-color: var(--orange); }
 
+/* Hide/restore button on card hover */
+.card-hide-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s;
+    color: var(--red);
+    font-size: 18px;
+    font-weight: 700;
+    z-index: 1;
+    background: var(--red-bg);
+}
+.policy-card:hover .card-hide-btn { opacity: 1; }
+.card-hide-btn:hover { background: var(--red); color: #fff; }
+
 .card-top {
     display: flex;
     align-items: center;
@@ -733,6 +756,26 @@ body {
 }
 
 .modal-body .prop-value.muted { color: var(--text-secondary); font-size: 13px; }
+.modal-body .prop-value a { color: var(--blue); text-decoration: none; }
+.modal-body .prop-value a:hover { text-decoration: underline; }
+
+.tooltip-wrap { position: relative; }
+.tooltip-text {
+    display: none;
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 0;
+    background: var(--text);
+    color: #fff;
+    font-size: 12px;
+    line-height: 1.4;
+    padding: 6px 10px;
+    border-radius: var(--radius);
+    width: 260px;
+    z-index: 10;
+    pointer-events: none;
+}
+.tooltip-wrap:hover .tooltip-text { display: block; }
 
 /* ── Empty State ─────────────────────────── */
 .empty-state {

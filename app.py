@@ -228,6 +228,7 @@ async def refresh_stream(request: Request, vault_key: str = "Ashish"):
         vault_key_derived = None
         known_msg_ids = set()
         extracted_msg_ids = set()
+        cached_extractions = []
 
         try:
             # Try to set up DB context (non-fatal if Turso unavailable)
@@ -236,14 +237,20 @@ async def refresh_stream(request: Request, vault_key: str = "Ashish"):
                     user_id = await db_service.get_or_create_user(email, user_name)
                     vault_key_derived = await db_service.verify_vault_key(user_id, vault_key)
                     known_msg_ids = await db_service.get_processed_msg_ids(user_id)
+                    # Load cached extractions early so we know which ones actually decrypt
+                    cached_extractions, failed_decrypt_ids = await db_service.get_cached_extractions(
+                        user_id, vault_key_derived
+                    )
                     # Extracted = relevant emails that already have extraction_json
                     rows = await turso_db.query(
                         """SELECT msg_id FROM processed_emails
                            WHERE user_id = ? AND is_relevant = 1 AND extraction_json IS NOT NULL""",
                         [user_id],
                     )
-                    extracted_msg_ids = {r["msg_id"] for r in rows}
-                    logger.info(f"DB: {len(known_msg_ids)} known, {len(extracted_msg_ids)} extracted for {email}")
+                    extracted_msg_ids = {r["msg_id"] for r in rows} - failed_decrypt_ids
+                    if failed_decrypt_ids:
+                        logger.warning(f"{len(failed_decrypt_ids)} extractions failed to decrypt, will re-extract")
+                    logger.info(f"DB: {len(known_msg_ids)} known, {len(extracted_msg_ids)} extracted, {len(cached_extractions)} cached for {email}")
                 except ValueError as e:
                     yield sse_event("error_event", {"message": str(e)})
                     return
@@ -331,15 +338,9 @@ async def refresh_stream(request: Request, vault_key: str = "Ashish"):
                 "message": "Deduplicating and finalizing...",
             })
 
-            cached_extractions = []
-            if vault_key_derived is not None and user_id is not None:
-                try:
-                    cached_extractions = await db_service.get_cached_extractions(
-                        user_id, vault_key_derived
-                    )
-                    logger.info(f"Loaded {len(cached_extractions)} cached extractions from DB")
-                except Exception as e:
-                    logger.warning(f"Failed to load cached extractions: {e}")
+            # cached_extractions already loaded during DB setup phase above
+            if not cached_extractions:
+                logger.info("No cached extractions available")
 
             logger.info(f"Finalizing {len(raw_policies)} new + {len(cached_extractions)} cached")
             final_policies = await pipeline.finalize(

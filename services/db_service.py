@@ -205,14 +205,21 @@ async def save_extraction_result(
     )
 
 
-async def get_cached_extractions(user_id: int, key: bytes) -> list[dict]:
-    """Load and decrypt all extraction_json for relevant emails."""
+async def get_cached_extractions(
+    user_id: int, key: bytes
+) -> tuple[list[dict], set[str]]:
+    """Load and decrypt all extraction_json for relevant emails.
+
+    Returns (extractions, failed_msg_ids) so callers can re-extract
+    emails whose cached extraction couldn't be decrypted.
+    """
     rows = await db.query(
         """SELECT msg_id, extraction_json FROM processed_emails
            WHERE user_id = ? AND is_relevant = 1 AND extraction_json IS NOT NULL""",
         [user_id],
     )
     results = []
+    failed_msg_ids = set()
     for r in rows:
         try:
             plaintext = decrypt(r["extraction_json"], key)
@@ -223,7 +230,8 @@ async def get_cached_extractions(user_id: int, key: bytes) -> list[dict]:
                 results.append(data)
         except Exception as e:
             logger.warning(f"Failed to decrypt extraction for msg {r['msg_id']}: {e}")
-    return results
+            failed_msg_ids.add(r["msg_id"])
+    return results, failed_msg_ids
 
 
 async def save_final_policies(user_id: int, policies: list[dict], key: bytes):

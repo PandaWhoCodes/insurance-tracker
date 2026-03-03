@@ -12,12 +12,16 @@ const API = {
 let isRefreshing = false;
 let allPolicies = [];
 let currentFilter = 'all';
+let hiddenPolicies = new Set();
+let currentUserEmail = null;
 
 // ── Init ────────────────────────────────────────
 async function init() {
     try {
         const user = await API.me();
         if (user.authenticated) {
+            currentUserEmail = user.email;
+            loadHiddenPolicies();
             showMainScreen(user);
             await loadPolicies();
         } else {
@@ -44,7 +48,8 @@ async function loadPolicies() {
     const data = await API.policies();
     if (data && data.policies && data.policies.length > 0) {
         allPolicies = data.policies.filter(p => p.policy_number || p.policy_end);
-        renderSummary(allPolicies);
+        const visible = allPolicies.filter(p => !hiddenPolicies.has(p.policy_number));
+        renderSummary(visible);
         renderFiltered();
         updateCacheInfo(data.fetched_at, data.from_cache);
         document.getElementById('empty-state').classList.add('hidden');
@@ -55,6 +60,61 @@ async function loadPolicies() {
         document.getElementById('summary-bar').classList.add('hidden');
         document.getElementById('filter-bar').classList.add('hidden');
     }
+}
+
+// ── Hidden Policies ─────────────────────────────
+function loadHiddenPolicies() {
+    try {
+        const key = 'hidden_policies_' + (currentUserEmail || 'default');
+        const stored = localStorage.getItem(key);
+        hiddenPolicies = stored ? new Set(JSON.parse(stored)) : new Set();
+    } catch { hiddenPolicies = new Set(); }
+}
+
+function saveHiddenPolicies() {
+    const key = 'hidden_policies_' + (currentUserEmail || 'default');
+    localStorage.setItem(key, JSON.stringify([...hiddenPolicies]));
+}
+
+function toggleHidePolicy(index, event) {
+    event.stopPropagation();
+    const filtered = getFilteredPolicies();
+    const p = filtered[index];
+    if (!p || !p.policy_number) return;
+
+    if (currentFilter === 'hidden') {
+        hiddenPolicies.delete(p.policy_number);
+    } else {
+        hiddenPolicies.add(p.policy_number);
+    }
+    saveHiddenPolicies();
+    const visiblePolicies = allPolicies.filter(p => !hiddenPolicies.has(p.policy_number));
+    renderSummary(visiblePolicies);
+    renderFiltered();
+    updateHiddenChip();
+}
+
+function updateHiddenChip() {
+    const bar = document.getElementById('filter-bar');
+    let chip = document.getElementById('hidden-chip');
+    const count = hiddenPolicies.size;
+
+    if (count === 0) {
+        if (chip) chip.remove();
+        if (currentFilter === 'hidden') setFilter('all');
+        return;
+    }
+
+    if (!chip) {
+        chip = document.createElement('button');
+        chip.id = 'hidden-chip';
+        chip.className = 'filter-chip';
+        chip.dataset.filter = 'hidden';
+        chip.onclick = () => setFilter('hidden');
+        bar.appendChild(chip);
+    }
+    chip.textContent = `Hidden (${count})`;
+    chip.classList.toggle('active', currentFilter === 'hidden');
 }
 
 // ── Filters ─────────────────────────────────────
@@ -68,6 +128,10 @@ function setFilter(filter) {
 
 function renderFiltered() {
     const filtered = allPolicies.filter(p => {
+        const isHidden = hiddenPolicies.has(p.policy_number);
+        if (currentFilter === 'hidden') return isHidden;
+        if (isHidden) return false;
+
         const status = (p.status || '').toUpperCase();
         const days = p.policy_end ? daysUntil(p.policy_end) : null;
 
@@ -83,6 +147,7 @@ function renderFiltered() {
         }
     });
     renderPolicies(filtered);
+    updateHiddenChip();
 }
 
 // ── Refresh (SSE) ──────────────────────────────
@@ -123,7 +188,8 @@ function refreshPolicies() {
             const complete = (d.policies || []).filter(p => p.policy_number || p.policy_end);
             if (complete.length > 0) {
                 allPolicies = complete;
-                renderSummary(allPolicies);
+                const visible = allPolicies.filter(p => !hiddenPolicies.has(p.policy_number));
+                renderSummary(visible);
                 renderFiltered();
                 updateCacheInfo(d.fetched_at, false);
                 document.getElementById('empty-state').classList.add('hidden');
@@ -146,6 +212,10 @@ function refreshPolicies() {
         showToast('Refresh failed: ' + d.message);
         isRefreshing = false;
         refreshBtn.disabled = false;
+        if (d.message && (d.message.includes('re-authenticate') || d.message.includes('No credentials'))) {
+            refreshBtn.textContent = 'Re-login';
+            refreshBtn.onclick = () => { window.location.href = '/auth/login'; };
+        }
     });
 
     es.onerror = () => {
@@ -275,9 +345,14 @@ function renderCard(p, index) {
         daysHtml = `<span>---</span>`;
     }
 
+    const hideIcon = currentFilter === 'hidden' ? '+' : '\u00d7';
+    const hideTitle = currentFilter === 'hidden' ? 'Restore policy' : 'Hide policy';
+    const hideBtn = p.policy_number ? `<span class="card-hide-btn" title="${hideTitle}" onclick="toggleHidePolicy(${index}, event)">${hideIcon}</span>` : '';
+
     if (isLocked) {
         return `
         <div class="policy-card locked" data-type="${type}" onclick="openModal(${index})">
+            ${hideBtn}
             <div class="card-top">
                 <span class="type-icon ${type}">${typeLabels[type] ? typeLabels[type][0] : '?'}</span>
                 <span class="badge badge-locked">LOCKED</span>
@@ -294,6 +369,7 @@ function renderCard(p, index) {
 
     return `
     <div class="policy-card" data-type="${type}" onclick="openModal(${index})">
+        ${hideBtn}
         <div class="card-top">
             <span class="type-icon ${type}">${typeLabels[type] ? typeLabels[type][0] : '?'}</span>
             <span class="badge ${badgeClass}">${status}</span>
@@ -362,6 +438,10 @@ function openModal(index) {
     if (p.intermediary) rows += propRow('Intermediary', p.intermediary);
     if (p.coverages && p.coverages.length) rows += propRow('Coverages', p.coverages.join(', '), true);
     if (p.notes) rows += propRow('Notes', p.notes, true);
+    if (p.source_msg_id) {
+        const gmailUrl = `https://mail.google.com/mail/u/0/#inbox/${p.source_msg_id}`;
+        rows += propRow('Source Email', `<span class="tooltip-wrap"><a href="${gmailUrl}" target="_blank" rel="noopener">${p.source_email || 'View in Gmail'}</a><span class="tooltip-text">If the link opens the wrong account, change /u/0/ in the URL to /u/1/, /u/2/, etc.</span></span>`);
+    }
 
     const container = document.getElementById('modal-container');
     container.innerHTML = `
@@ -439,8 +519,11 @@ function closeModal(event) {
 }
 
 function getFilteredPolicies() {
-    const order = { health: 1, car: 2, term_life: 3 };
     const filtered = allPolicies.filter(p => {
+        const isHidden = hiddenPolicies.has(p.policy_number);
+        if (currentFilter === 'hidden') return isHidden;
+        if (isHidden) return false;
+
         const status = (p.status || '').toUpperCase();
         const days = p.policy_end ? daysUntil(p.policy_end) : null;
         switch (currentFilter) {

@@ -118,8 +118,9 @@ class TestSaveAndGetExtractions:
         mock_db.query = AsyncMock(return_value=[
             {"msg_id": "msg_1", "extraction_json": encrypted_value}
         ])
-        results = await get_cached_extractions(1, key)
+        results, failed = await get_cached_extractions(1, key)
         assert len(results) == 1
+        assert len(failed) == 0
         assert results[0]["policy_number"] == "RT123"
 
 

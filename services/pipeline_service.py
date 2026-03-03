@@ -335,6 +335,7 @@ class PipelineService:
             if result and not result.get("skip"):
                 result["source_pdf"] = doc["pdf_filename"]
                 result["source_email"] = doc["email_subject"]
+                result["source_msg_id"] = doc.get("_msg_id", "")
                 if is_locked:
                     result["password_protected"] = True
                     result["locked_pdf_path"] = doc.get("_locked_pdf_path", "")
@@ -392,7 +393,7 @@ class PipelineService:
 
         def _merge(winner, loser):
             """Fill null fields in winner from loser."""
-            skip_keys = ('status', 'source_pdf', 'source_email',
+            skip_keys = ('status', 'source_pdf', 'source_email', 'source_msg_id',
                          'password_protected', 'locked_pdf_path', 'password_hint')
             for key in loser:
                 if key in skip_keys:

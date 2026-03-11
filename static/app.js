@@ -162,7 +162,7 @@ function refreshPolicies(forceRefresh = false) {
 
     const refreshBtn = document.getElementById('refresh-btn');
     refreshBtn.disabled = true;
-    showProgress(forceRefresh ? 'Force re-extracting all policies...' : 'Searching Gmail for insurance emails...');
+    showProgress('Scanning your inbox...');
     setActiveStage('gmail');
 
     let url = '/api/policies/refresh-stream?vault_key=' + encodeURIComponent(vaultKey);
@@ -171,17 +171,13 @@ function refreshPolicies(forceRefresh = false) {
 
     es.addEventListener('progress', (e) => {
         const d = JSON.parse(e.data);
-        const elapsed = ((Date.now() - _refreshStart) / 1000).toFixed(0);
-        const tsPrefix = d.ts ? `[${d.ts}] ` : '';
-        updateProgress(d.pct, `${tsPrefix}${d.message} (${elapsed}s)`);
+        updateProgress(d.pct, d.message);
         if (d.stage) setActiveStage(d.stage);
     });
 
     es.addEventListener('stage_complete', (e) => {
         const d = JSON.parse(e.data);
-        const elapsed = ((Date.now() - _refreshStart) / 1000).toFixed(0);
-        const tsPrefix = d.ts ? `[${d.ts}] ` : '';
-        updateProgress(d.pct || null, `${tsPrefix}${d.message} (${elapsed}s)`);
+        updateProgress(d.pct || null, d.message);
         if (d.stage) completeStage(d.stage);
     });
 
@@ -189,8 +185,7 @@ function refreshPolicies(forceRefresh = false) {
         const d = JSON.parse(e.data);
         es.close();
         completeStage('finalize');
-        const totalElapsed = d.elapsed || ((Date.now() - _refreshStart) / 1000).toFixed(1);
-        updateProgress(100, `Done in ${totalElapsed}s!`);
+        updateProgress(100, 'All done!');
 
         setTimeout(() => {
             hideProgress();
@@ -234,6 +229,69 @@ function refreshPolicies(forceRefresh = false) {
         isRefreshing = false;
         refreshBtn.disabled = false;
     };
+}
+
+// ── Upload PDF ─────────────────────────────────
+async function handlePdfUpload(input) {
+    const file = input.files[0];
+    input.value = ''; // reset so same file can be re-selected
+    if (!file) return;
+
+    const uploadBtn = document.getElementById('upload-btn');
+    const origText = uploadBtn.innerHTML;
+    uploadBtn.disabled = true;
+    uploadBtn.innerHTML = '<span class="spinner-small"></span> Uploading...';
+
+    try {
+        const result = await uploadPdf(file, '');
+
+        if (result.needs_password) {
+            const password = prompt('This PDF is password-protected. Enter the password:');
+            if (!password) {
+                showToast('Upload cancelled.');
+                return;
+            }
+            const retryResult = await uploadPdf(file, password);
+            if (retryResult.error) {
+                showToast(retryResult.error);
+                return;
+            }
+            applyUploadResult(retryResult);
+        } else if (result.error) {
+            showToast(result.error);
+        } else {
+            applyUploadResult(result);
+        }
+    } catch (e) {
+        showToast('Upload failed: ' + e.message);
+    } finally {
+        uploadBtn.disabled = false;
+        uploadBtn.innerHTML = origText;
+    }
+}
+
+async function uploadPdf(file, password) {
+    const form = new FormData();
+    form.append('file', file);
+    if (password) form.append('password', password);
+    form.append('vault_key', 'Ashish');
+
+    const resp = await fetch('/api/policies/upload', { method: 'POST', body: form });
+    const data = await resp.json();
+    if (!resp.ok) return { error: data.error || 'Upload failed' };
+    return data;
+}
+
+function applyUploadResult(data) {
+    if (data.policies) {
+        allPolicies = data.policies;
+    } else if (data.policy) {
+        allPolicies.push(data.policy);
+    }
+    const visible = allPolicies.filter(p => !hiddenPolicies.has(p.policy_number));
+    renderSummary(visible);
+    renderFiltered();
+    showToast('Policy added from uploaded PDF.');
 }
 
 // ── Progress ────────────────────────────────────

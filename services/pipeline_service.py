@@ -186,7 +186,7 @@ class PipelineService:
                 "type": "progress",
                 "stage": "triage",
                 "pct": 5,
-                "message": f"{cached_count} cached, triaging {total} new...",
+                "message": f"Reviewing {total} new emails...",
             }
 
         relevant = []
@@ -197,7 +197,7 @@ class PipelineService:
                 "type": "progress",
                 "stage": "triage",
                 "pct": 10,
-                "message": f"Classifying {total} emails via Groq...",
+                "message": f"Identifying insurance emails ({total} to review)...",
             }
 
             # Run Groq LLM triage (batched, ~2-3s for all emails)
@@ -229,7 +229,7 @@ class PipelineService:
                 "type": "progress",
                 "stage": "triage",
                 "pct": 35,
-                "message": f"Classified {total} emails: {len(relevant)} relevant",
+                "message": f"Found {len(relevant)} insurance emails out of {total}",
             }
 
         elapsed = time.time() - t_stage
@@ -242,7 +242,7 @@ class PipelineService:
             "skipped": skipped,
             "cached": cached_count,
             "relevant_emails": relevant,
-            "message": f"Triage done in {elapsed:.1f}s: {len(relevant)} relevant, {skipped} skipped, {cached_count} cached",
+            "message": f"Found {len(relevant)} insurance emails in {elapsed:.1f}s",
         }
 
     # ── Stage 2: Extract ─────────────────────────────
@@ -269,7 +269,7 @@ class PipelineService:
                 "type": "progress",
                 "stage": "extract",
                 "pct": 35,
-                "message": f"{cached_count} cached extractions, processing {total} new...",
+                "message": f"Processing {total} new emails...",
             }
 
         # Deduplicate emails by msg_id (same email can appear in multiple triage passes)
@@ -306,7 +306,7 @@ class PipelineService:
                     "current": global_idx,
                     "total": total,
                     "pct": int(35 + (global_idx / max(total, 1)) * 20),
-                    "message": f"Downloading {global_idx + 1}/{total}: {meta['subject'][:40]}...",
+                    "message": f"Reading email {global_idx + 1} of {total}...",
                 }
                 t0 = time.time()
                 try:
@@ -357,7 +357,7 @@ class PipelineService:
                         "type": "progress",
                         "stage": "extract",
                         "pct": int(55 + (llm_completed / max(total, 1)) * 30),
-                        "message": f"Extracted {llm_completed}/{total}: {doc['pdf_filename'][:40]}...",
+                        "message": f"Extracting policy details ({llm_completed} of {total})...",
                     }
 
                 tasks = [asyncio.create_task(llm_one(d)) for d in batch_docs]
@@ -380,7 +380,7 @@ class PipelineService:
                 "count": 0,
                 "cached": 0,
                 "raw_policies": [],
-                "message": "No documents to extract",
+                "message": "No policy documents found",
             }
             return
 
@@ -390,7 +390,7 @@ class PipelineService:
             "count": len(raw_policies),
             "cached": cached_count,
             "raw_policies": raw_policies,
-            "message": f"Extracted {len(raw_policies)} new + {cached_count} cached in {elapsed:.1f}s",
+            "message": f"Found {len(raw_policies)} policies in {elapsed:.1f}s",
         }
 
     async def _grok_extract(self, doc: dict) -> dict | None:

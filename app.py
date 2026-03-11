@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
@@ -339,7 +339,7 @@ async def refresh_stream(request: Request, vault_key: str = "Ashish", force: boo
 
             yield sse_event("progress", {
                 "stage": "gmail", "pct": 0,
-                "message": "Searching Gmail for insurance emails...",
+                "message": "Scanning your inbox...",
             })
 
             t0 = _time.time()
@@ -350,7 +350,7 @@ async def refresh_stream(request: Request, vault_key: str = "Ashish", force: boo
 
             yield sse_event("stage_complete", {
                 "stage": "gmail", "total": len(metadata),
-                "message": f"Found {len(metadata)} emails in {gmail_elapsed:.1f}s",
+                "message": f"Found {len(metadata)} emails to review",
             })
 
             if not metadata:
@@ -415,7 +415,7 @@ async def refresh_stream(request: Request, vault_key: str = "Ashish", force: boo
             # Stage 3: Finalize — merge cached extractions with new
             yield sse_event("progress", {
                 "stage": "finalize", "pct": 88,
-                "message": "Deduplicating and finalizing...",
+                "message": "Organizing your policies...",
             })
 
             # cached_extractions already loaded during DB setup phase above
@@ -600,6 +600,109 @@ async def unlock_pdf(request: Request):
             return JSONResponse({"error": "Wrong password. Please try again."}, status_code=401)
         logger.error(f"Unlock failed: {e}", exc_info=True)
         return JSONResponse({"error": f"Failed to read PDF: {str(e)}"}, status_code=500)
+
+
+@app.post("/api/policies/upload")
+async def upload_pdf(
+    request: Request,
+    file: UploadFile = File(...),
+    password: str = Form(""),
+    vault_key: str = Form("Ashish"),
+):
+    """Upload a PDF policy document manually."""
+    email = request.session.get("user_email")
+    if not email:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        return JSONResponse({"error": "Only PDF files are accepted"}, status_code=400)
+
+    import fitz  # PyMuPDF
+
+    # Save uploaded file
+    upload_dir = BASE_DIR / "attachments" / email / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_name = "".join(c if c.isalnum() or c in "._- " else "_" for c in file.filename)
+    save_path = upload_dir / safe_name
+    # Deconflict filename
+    counter = 1
+    while save_path.exists():
+        stem = Path(safe_name).stem
+        suffix = Path(safe_name).suffix
+        save_path = upload_dir / f"{stem}_{counter}{suffix}"
+        counter += 1
+
+    content = await file.read()
+    save_path.write_bytes(content)
+    logger.info(f"Uploaded PDF saved: {save_path} ({len(content)} bytes)")
+
+    try:
+        doc = fitz.open(str(save_path))
+
+        if doc.is_encrypted:
+            if not password:
+                doc.close()
+                return {"needs_password": True, "filename": save_path.name}
+            if not doc.authenticate(password):
+                doc.close()
+                return JSONResponse({"error": "Wrong password. Please try again."}, status_code=401)
+
+        text = ""
+        for page in doc:
+            page_text = page.get_text()
+            if page_text:
+                text += page_text + "\n"
+        doc.close()
+
+        if not text or len(text.strip()) < 50:
+            return JSONResponse({"error": "No readable text found in PDF"}, status_code=422)
+
+        # Extract policy via LLM
+        pipeline = PipelineService()
+        extract_doc = {
+            "pdf_filename": file.filename,
+            "email_subject": "Manual upload",
+            "pdf_text": text,
+        }
+        result = await pipeline._grok_extract(extract_doc)
+
+        if not result:
+            return JSONResponse({"error": "Could not extract policy details from this PDF"}, status_code=422)
+
+        # Fix status based on today's date
+        end = result.get("policy_end")
+        if end:
+            try:
+                end_date = datetime.strptime(end, "%Y-%m-%d").date()
+                result["status"] = "ACTIVE" if end_date >= datetime.now().date() else "EXPIRED"
+            except (ValueError, TypeError):
+                pass
+
+        # Dedup with existing policies
+        cached = cache.get(email)
+        existing = cached["policies"] if cached else []
+        merged = await pipeline.finalize([result], existing)
+        cache.set(email, merged)
+
+        # Update DB
+        user_name = request.session.get("user_name", email)
+        if turso_db._client is not None:
+            try:
+                user_id = await db_service.get_or_create_user(email, user_name)
+                vault_key_derived = await db_service.verify_vault_key(user_id, vault_key)
+                await db_service.save_final_policies(user_id, merged, vault_key_derived)
+            except Exception as e:
+                logger.warning(f"Failed to update DB after upload: {e}")
+
+        return {"policy": result, "policies": merged}
+
+    except Exception as e:
+        err_repr = repr(e).lower()
+        if "password" in err_repr:
+            return JSONResponse({"error": "Wrong password. Please try again."}, status_code=401)
+        logger.error(f"Upload processing failed: {e}", exc_info=True)
+        return JSONResponse({"error": f"Failed to process PDF: {str(e)}"}, status_code=500)
 
 
 if __name__ == "__main__":

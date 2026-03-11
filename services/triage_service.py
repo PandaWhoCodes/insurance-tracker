@@ -5,9 +5,9 @@ Fallback: keyword-based scoring if Groq unavailable.
 """
 
 import asyncio
-import json
 import logging
 import os
+import re
 import time
 
 from openai import AsyncOpenAI
@@ -132,7 +132,6 @@ class TriageService:
         content = response.choices[0].message.content.strip()
 
         # Parse numbered responses: "1. YES", "2. NO", etc.
-        import re
         parsed = {}
         for line in content.split("\n"):
             line = line.strip()

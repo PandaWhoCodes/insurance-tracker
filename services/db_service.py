@@ -29,6 +29,7 @@ SCHEMA_SQL = [
         name TEXT,
         vault_hash TEXT,
         vault_salt TEXT,
+        google_token TEXT,
         created_at TEXT NOT NULL
     )""",
     """CREATE TABLE IF NOT EXISTS processed_emails (
@@ -51,6 +52,10 @@ SCHEMA_SQL = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_pe_user ON processed_emails(user_id)",
     "CREATE INDEX IF NOT EXISTS idx_pol_user ON policies(user_id)",
+]
+
+MIGRATIONS = [
+    "ALTER TABLE users ADD COLUMN google_token TEXT",
 ]
 
 # ── Encryption helpers ────────────────────────────
@@ -121,6 +126,12 @@ class Database:
 
     async def init_schema(self):
         await self._client.batch(SCHEMA_SQL)
+        # Run migrations (ignore errors for already-applied ones)
+        for sql in MIGRATIONS:
+            try:
+                await self._client.execute(sql, [])
+            except Exception:
+                pass  # Column already exists
         logger.info("DB schema initialized")
 
 
@@ -232,6 +243,39 @@ async def get_cached_extractions(
             logger.warning(f"Failed to decrypt extraction for msg {r['msg_id']}: {e}")
             failed_msg_ids.add(r["msg_id"])
     return results, failed_msg_ids
+
+
+async def save_google_token(email: str, token_json: str):
+    """Save Google OAuth token for a user."""
+    await db.execute(
+        "UPDATE users SET google_token = ? WHERE email = ?",
+        [token_json, email],
+    )
+
+
+async def get_google_token(email: str) -> str | None:
+    """Load Google OAuth token for a user."""
+    row = await db.query_one(
+        "SELECT google_token FROM users WHERE email = ?", [email]
+    )
+    return row["google_token"] if row else None
+
+
+async def load_final_policies(user_id: int, key: bytes) -> list[dict] | None:
+    """Load and decrypt all saved policies for a user. Returns None if no data."""
+    rows = await db.query(
+        "SELECT policy_json, updated_at FROM policies WHERE user_id = ?", [user_id]
+    )
+    if not rows:
+        return None
+    policies = []
+    for r in rows:
+        try:
+            plaintext = decrypt(r["policy_json"], key)
+            policies.append(json.loads(plaintext))
+        except Exception as e:
+            logger.warning(f"Failed to decrypt policy: {e}")
+    return policies
 
 
 async def save_final_policies(user_id: int, policies: list[dict], key: bytes):

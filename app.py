@@ -61,6 +61,11 @@ async def shutdown():
     await turso_db.close()
 
 
+def _redirect_uri():
+    base = os.getenv("BASE_URL", "http://localhost:8080")
+    return f"{base}/auth/callback"
+
+
 def create_oauth_flow() -> Flow:
     client_config = {
         "web": {
@@ -68,11 +73,11 @@ def create_oauth_flow() -> Flow:
             "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
-            "redirect_uris": ["http://localhost:8080/auth/callback"],
+            "redirect_uris": [_redirect_uri()],
         }
     }
     flow = Flow.from_client_config(client_config, scopes=SCOPES)
-    flow.redirect_uri = "http://localhost:8080/auth/callback"
+    flow.redirect_uri = _redirect_uri()
     return flow
 
 
@@ -111,6 +116,8 @@ async def login(request: Request):
         prompt="consent",
     )
     request.session["oauth_state"] = state
+    # Store PKCE code_verifier so callback can use it
+    request.session["code_verifier"] = flow.code_verifier
     return RedirectResponse(authorization_url)
 
 
@@ -119,7 +126,13 @@ async def callback(request: Request):
     import os as _os
     _os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
     flow = create_oauth_flow()
-    flow.fetch_token(authorization_response=str(request.url))
+    # Restore PKCE code_verifier from session
+    flow.code_verifier = request.session.get("code_verifier")
+    # Fly proxy terminates TLS, so request.url is http:// but redirect_uri is https://
+    callback_url = str(request.url)
+    if callback_url.startswith("http://") and _redirect_uri().startswith("https://"):
+        callback_url = callback_url.replace("http://", "https://", 1)
+    flow.fetch_token(authorization_response=callback_url)
     credentials = flow.credentials
 
     # Get user info
@@ -128,10 +141,19 @@ async def callback(request: Request):
     user_email = user_info["email"]
     user_name = user_info.get("name", user_email)
 
-    # Save token per user
+    # Save token per user (local file + DB for persistence across restarts)
+    token_json = credentials.to_json()
     token_path = TOKENS_DIR / f"{user_email}.json"
     with open(token_path, "w") as f:
-        f.write(credentials.to_json())
+        f.write(token_json)
+
+    # Persist to Turso DB so token survives machine restarts
+    if turso_db._client is not None:
+        try:
+            await db_service.get_or_create_user(user_email, user_name)
+            await db_service.save_google_token(user_email, token_json)
+        except Exception as e:
+            logger.warning(f"Failed to save token to DB: {e}")
 
     # Set session
     request.session["user_email"] = user_email
@@ -159,7 +181,7 @@ async def get_me(request: Request):
 
 
 @app.get("/api/policies")
-async def get_policies(request: Request):
+async def get_policies(request: Request, vault_key: str = "Ashish"):
     email = request.session.get("user_email")
     if not email:
         return JSONResponse({"error": "Not authenticated"}, status_code=401)
@@ -171,6 +193,23 @@ async def get_policies(request: Request):
             "fetched_at": cached["fetched_at"],
             "from_cache": True,
         }
+
+    # Fall back to Turso DB (persists across machine restarts)
+    if turso_db._client is not None:
+        try:
+            user_id = await db_service.get_or_create_user(email)
+            vault_key_derived = await db_service.verify_vault_key(user_id, vault_key)
+            policies = await db_service.load_final_policies(user_id, vault_key_derived)
+            if policies:
+                cache.set(email, policies)  # warm up in-memory cache
+                return {
+                    "policies": policies,
+                    "fetched_at": None,
+                    "from_cache": True,
+                }
+        except Exception as e:
+            logger.warning(f"Failed to load policies from DB: {e}")
+
     return JSONResponse({"error": "No cached data"}, status_code=404)
 
 
@@ -211,11 +250,16 @@ async def refresh_policies(request: Request):
 
 
 def sse_event(event_type: str, data: dict) -> str:
+    data["ts"] = datetime.now().strftime("%H:%M:%S")
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
 
+def sse_keepalive() -> str:
+    return ": keepalive\n\n"
+
+
 @app.get("/api/policies/refresh-stream")
-async def refresh_stream(request: Request, vault_key: str = "Ashish"):
+async def refresh_stream(request: Request, vault_key: str = "Ashish", force: bool = False):
     email = request.session.get("user_email")
     if not email:
         return JSONResponse({"error": "Not authenticated"}, status_code=401)
@@ -237,19 +281,32 @@ async def refresh_stream(request: Request, vault_key: str = "Ashish"):
                     user_id = await db_service.get_or_create_user(email, user_name)
                     vault_key_derived = await db_service.verify_vault_key(user_id, vault_key)
                     known_msg_ids = await db_service.get_processed_msg_ids(user_id)
-                    # Load cached extractions early so we know which ones actually decrypt
-                    cached_extractions, failed_decrypt_ids = await db_service.get_cached_extractions(
-                        user_id, vault_key_derived
-                    )
-                    # Extracted = relevant emails that already have extraction_json
-                    rows = await turso_db.query(
-                        """SELECT msg_id FROM processed_emails
-                           WHERE user_id = ? AND is_relevant = 1 AND extraction_json IS NOT NULL""",
-                        [user_id],
-                    )
-                    extracted_msg_ids = {r["msg_id"] for r in rows} - failed_decrypt_ids
-                    if failed_decrypt_ids:
-                        logger.warning(f"{len(failed_decrypt_ids)} extractions failed to decrypt, will re-extract")
+
+                    # Force refresh: clear ALL triage + extraction data so everything re-runs
+                    if force:
+                        await turso_db.execute(
+                            "DELETE FROM processed_emails WHERE user_id = ?",
+                            [user_id],
+                        )
+                        logger.info(f"Force refresh: cleared all triage and extraction data for {email}")
+                        known_msg_ids = set()
+                        cached_extractions = []
+                        extracted_msg_ids = set()
+                    else:
+                        # Load cached extractions early so we know which ones actually decrypt
+                        cached_extractions, failed_decrypt_ids = await db_service.get_cached_extractions(
+                            user_id, vault_key_derived
+                        )
+                        # Extracted = relevant emails that already have extraction_json
+                        rows = await turso_db.query(
+                            """SELECT msg_id FROM processed_emails
+                               WHERE user_id = ? AND is_relevant = 1 AND extraction_json IS NOT NULL""",
+                            [user_id],
+                        )
+                        extracted_msg_ids = {r["msg_id"] for r in rows} - failed_decrypt_ids
+                        if failed_decrypt_ids:
+                            logger.warning(f"{len(failed_decrypt_ids)} extractions failed to decrypt, will re-extract")
+
                     logger.info(f"DB: {len(known_msg_ids)} known, {len(extracted_msg_ids)} extracted, {len(cached_extractions)} cached for {email}")
                 except ValueError as e:
                     yield sse_event("error_event", {"message": str(e)})
@@ -259,18 +316,41 @@ async def refresh_stream(request: Request, vault_key: str = "Ashish"):
                     user_id = None
                     vault_key_derived = None
 
+            # Restore token file from DB if missing (e.g. after machine restart)
+            token_path = TOKENS_DIR / f"{email}.json"
+            if not token_path.exists() and turso_db._client is not None:
+                try:
+                    token_json = await db_service.get_google_token(email)
+                    if token_json:
+                        with open(token_path, "w") as f:
+                            f.write(token_json)
+                        logger.info(f"Restored token from DB for {email}")
+                    else:
+                        yield sse_event("error_event", {
+                            "message": "No credentials found. Please re-authenticate.",
+                        })
+                        return
+                except Exception as e:
+                    logger.warning(f"Failed to restore token from DB: {e}")
+
             # Phase 0: Gmail metadata fetch
+            import time as _time
+            pipeline_start = _time.time()
+
             yield sse_event("progress", {
                 "stage": "gmail", "pct": 0,
                 "message": "Searching Gmail for insurance emails...",
             })
 
+            t0 = _time.time()
             gmail = GmailService(email)
             metadata = await asyncio.to_thread(gmail.fetch_email_metadata)
+            gmail_elapsed = _time.time() - t0
+            logger.info(f"[Timing] GMAIL FETCH: {gmail_elapsed:.2f}s — {len(metadata)} emails")
 
             yield sse_event("stage_complete", {
                 "stage": "gmail", "total": len(metadata),
-                "message": f"Found {len(metadata)} emails",
+                "message": f"Found {len(metadata)} emails in {gmail_elapsed:.1f}s",
             })
 
             if not metadata:
@@ -351,26 +431,56 @@ async def refresh_stream(request: Request, vault_key: str = "Ashish"):
             # Save final policies to DB (encrypted)
             if vault_key_derived is not None and user_id is not None:
                 try:
+                    t0 = _time.time()
                     await db_service.save_final_policies(
                         user_id, final_policies, vault_key_derived
                     )
-                    logger.info("Saved final policies to DB")
+                    logger.info(f"[Timing] DB save final policies: {_time.time() - t0:.2f}s")
                 except Exception as e:
                     logger.warning(f"Failed to save final policies to DB: {e}")
 
             cache.set(email, final_policies)
-            logger.info(f"Sending done event with {len(final_policies)} policies")
+            total_elapsed = _time.time() - pipeline_start
+            logger.info(f"[Timing] PIPELINE TOTAL: {total_elapsed:.2f}s — {len(final_policies)} policies")
             yield sse_event("done", {
                 "policies": final_policies,
                 "fetched_at": datetime.now().isoformat(),
+                "elapsed": round(total_elapsed, 1),
             })
 
         except Exception as e:
             logger.error(f"Pipeline failed: {e}", exc_info=True)
             yield sse_event("error_event", {"message": str(e)})
 
+    async def with_keepalive(gen):
+        """Wrap an SSE generator with periodic keepalive comments to prevent proxy timeouts."""
+        queue = asyncio.Queue()
+        done = False
+
+        async def producer():
+            nonlocal done
+            try:
+                async for item in gen:
+                    await queue.put(item)
+            finally:
+                done = True
+                await queue.put(None)  # sentinel
+
+        task = asyncio.create_task(producer())
+        try:
+            while True:
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=10)
+                    if item is None:
+                        break
+                    yield item
+                except asyncio.TimeoutError:
+                    yield sse_keepalive()
+        finally:
+            task.cancel()
+
     return StreamingResponse(
-        event_generator(),
+        with_keepalive(event_generator()),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -396,7 +506,7 @@ async def unlock_pdf(request: Request):
         return JSONResponse({"error": "Missing pdf_path or password"}, status_code=400)
 
     # Security: ensure the path is within the attachments directory
-    import pdfplumber
+    import fitz  # PyMuPDF
     attachments_dir = str(BASE_DIR / "attachments")
     resolved = str(Path(pdf_path).resolve())
     if not resolved.startswith(attachments_dir):
@@ -408,11 +518,16 @@ async def unlock_pdf(request: Request):
     # Try opening with password
     try:
         text = ""
-        with pdfplumber.open(pdf_path, password=password) as pdf:
-            for page in pdf.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text + "\n"
+        doc = fitz.open(pdf_path)
+        if doc.is_encrypted:
+            if not doc.authenticate(password):
+                doc.close()
+                return JSONResponse({"error": "Wrong password. Please try again."}, status_code=401)
+        for page in doc:
+            page_text = page.get_text()
+            if page_text:
+                text += page_text + "\n"
+        doc.close()
 
         if not text or len(text.strip()) < 50:
             return JSONResponse({"error": "Password accepted but no text could be extracted"}, status_code=422)

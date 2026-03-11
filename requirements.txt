@@ -4,7 +4,7 @@ python-dotenv
 google-api-python-client
 google-auth-oauthlib
 google-auth-httplib2
-pdfplumber
+PyMuPDF
 openai
 itsdangerous
 python-multipart

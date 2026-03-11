@@ -151,29 +151,37 @@ function renderFiltered() {
 }
 
 // ── Refresh (SSE) ──────────────────────────────
-function refreshPolicies() {
+function refreshPolicies(forceRefresh = false) {
     if (isRefreshing) return;
 
     const vaultKey = prompt('Enter vault key:', 'Ashish');
     if (vaultKey === null) return; // cancelled
 
     isRefreshing = true;
+    const _refreshStart = Date.now();
 
     const refreshBtn = document.getElementById('refresh-btn');
     refreshBtn.disabled = true;
-    showProgress('Searching Gmail for insurance emails...');
+    showProgress(forceRefresh ? 'Force re-extracting all policies...' : 'Searching Gmail for insurance emails...');
     setActiveStage('gmail');
 
-    const es = new EventSource('/api/policies/refresh-stream?vault_key=' + encodeURIComponent(vaultKey));
+    let url = '/api/policies/refresh-stream?vault_key=' + encodeURIComponent(vaultKey);
+    if (forceRefresh) url += '&force=true';
+    const es = new EventSource(url);
 
     es.addEventListener('progress', (e) => {
         const d = JSON.parse(e.data);
-        updateProgress(d.pct, d.message);
+        const elapsed = ((Date.now() - _refreshStart) / 1000).toFixed(0);
+        const tsPrefix = d.ts ? `[${d.ts}] ` : '';
+        updateProgress(d.pct, `${tsPrefix}${d.message} (${elapsed}s)`);
         if (d.stage) setActiveStage(d.stage);
     });
 
     es.addEventListener('stage_complete', (e) => {
         const d = JSON.parse(e.data);
+        const elapsed = ((Date.now() - _refreshStart) / 1000).toFixed(0);
+        const tsPrefix = d.ts ? `[${d.ts}] ` : '';
+        updateProgress(d.pct || null, `${tsPrefix}${d.message} (${elapsed}s)`);
         if (d.stage) completeStage(d.stage);
     });
 
@@ -181,7 +189,8 @@ function refreshPolicies() {
         const d = JSON.parse(e.data);
         es.close();
         completeStage('finalize');
-        updateProgress(100, 'Done!');
+        const totalElapsed = d.elapsed || ((Date.now() - _refreshStart) / 1000).toFixed(1);
+        updateProgress(100, `Done in ${totalElapsed}s!`);
 
         setTimeout(() => {
             hideProgress();

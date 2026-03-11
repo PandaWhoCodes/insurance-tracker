@@ -7,9 +7,9 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends gcc libffi-dev && \
     rm -rf /var/lib/apt/lists/*
 
-# Install Python deps (ML deps separate for layer caching)
-COPY requirements.txt requirements-ml.txt ./
-RUN pip install --no-cache-dir -r requirements.txt -r requirements-ml.txt
+# Install Python deps (no ML deps — triage uses Grok API fallback)
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy app code
 COPY services/ services/

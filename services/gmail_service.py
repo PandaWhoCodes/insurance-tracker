@@ -1,13 +1,14 @@
 import base64
 import re
 import logging
+import time
 from pathlib import Path
 from datetime import datetime, timedelta
 
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
-import pdfplumber
+import fitz  # PyMuPDF
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +20,9 @@ SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 
 def get_search_queries():
     two_years_ago = (datetime.now() - timedelta(days=730)).strftime("%Y/%m/%d")
-    base_terms = [
+
+    # Layer 1: Insurance type keywords (broad net)
+    type_terms = [
         "health insurance",
         "mediclaim",
         "car insurance",
@@ -34,7 +37,32 @@ def get_search_queries():
         "home insurance",
         "travel insurance",
     ]
-    queries = [f"{term} after:{two_years_ago}" for term in base_terms]
+    queries = [f"{term} after:{two_years_ago}" for term in type_terms]
+
+    # Layer 2: Policy document indicators (catches ANY insurer's policy emails)
+    # These terms appear in actual policy issuance/renewal emails from every Indian insurer
+    doc_terms = [
+        '"policy document" has:attachment',
+        '"policy copy" has:attachment',
+        '"policy schedule" has:attachment',
+        '"renewed policy" has:attachment',
+        '"certificate of insurance" has:attachment',
+        '"sum insured"',
+        '"policy period"',
+        '"policy bond" has:attachment',
+        '"premium receipt" has:attachment',
+        '"premium paid certificate"',
+        'subject:"your policy" has:attachment',
+        'subject:"policy renewal"',
+        'subject:"renewed" subject:"policy"',
+    ]
+    queries.extend(f"{q} after:{two_years_ago}" for q in doc_terms)
+
+    # Layer 3: Common Indian insurer email patterns
+    queries.append(f'"thank you for choosing" insurance has:attachment after:{two_years_ago}')
+    queries.append(f'"your policy" "has been" has:attachment after:{two_years_ago}')
+    queries.append(f'"policy number" has:attachment after:{two_years_ago}')
+
     # Also search for older term life docs without date filter
     queries.append('subject:"policy copy" from:policybazaar')
     queries.append('subject:"term life" has:attachment')
@@ -82,15 +110,17 @@ class GmailService:
         Uses batch API to fetch metadata in chunks of 25 with retry + backoff.
         Returns list of {msg_id, subject, from, date, snippet}. No PDF download.
         """
+        t_total = time.time()
         all_msg_ids = set()
         queries = get_search_queries()
 
+        t_search = time.time()
         for query in queries:
-            logger.info(f"Searching: '{query}'")
-            messages = self._search_emails(query, max_results=30)
+            t0 = time.time()
+            messages = self._search_emails(query, max_results=100)
+            logger.info(f"[Timing] Search query: {time.time() - t0:.2f}s — '{query[:50]}' → {len(messages)} results")
             all_msg_ids.update(m["id"] for m in messages)
-
-        logger.info(f"Total unique emails found: {len(all_msg_ids)}")
+        logger.info(f"[Timing] All searches: {time.time() - t_search:.2f}s — {len(queries)} queries → {len(all_msg_ids)} unique emails")
 
         if not all_msg_ids:
             return []
@@ -100,6 +130,7 @@ class GmailService:
         batch_size = 25
         max_retries = 5
 
+        t_batch_phase = time.time()
         for attempt in range(max_retries + 1):
             if not remaining:
                 break
@@ -107,7 +138,6 @@ class GmailService:
             if attempt > 0:
                 delay = min(2 ** attempt, 30)
                 logger.info(f"Retry {attempt}/{max_retries}: {len(remaining)} remaining, waiting {delay}s...")
-                import time
                 time.sleep(delay)
 
             failed = []
@@ -125,6 +155,7 @@ class GmailService:
                         batch_results[mid] = response
                     return cb
 
+                t0 = time.time()
                 batch = self.service.new_batch_http_request()
                 for mid in batch_chunk:
                     batch.add(
@@ -135,38 +166,50 @@ class GmailService:
                         callback=make_callback(mid),
                     )
                 batch.execute()
+                logger.info(f"[Timing] Metadata batch API: {time.time() - t0:.2f}s — {len(batch_chunk)} emails, {len(batch_failed)} failed")
 
                 for mid, msg in batch_results.items():
                     headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
+                    # Check for attachments in payload parts
+                    parts = msg.get("payload", {}).get("parts", [])
+                    has_att = any(
+                        p.get("filename") for p in parts
+                    ) if parts else False
                     results[mid] = {
                         "msg_id": mid,
                         "subject": headers.get("Subject", "(no subject)"),
                         "from": headers.get("From", ""),
                         "date": headers.get("Date", ""),
                         "snippet": msg.get("snippet", ""),
+                        "has_attachments": has_att,
                     }
 
                 failed.extend(batch_failed)
 
                 # Brief pause between batches to avoid rate limits
                 if batch_start + batch_size < len(remaining):
-                    import time
                     time.sleep(0.3)
 
             logger.info(f"Attempt {attempt + 1}: fetched {len(results)}/{len(all_msg_ids)} metadata, {len(failed)} failed")
             remaining = failed
 
+        logger.info(f"[Timing] Batch metadata phase: {time.time() - t_batch_phase:.2f}s")
+
         if remaining:
             logger.warning(f"Could not fetch metadata for {len(remaining)} emails after {max_retries + 1} attempts")
 
+        logger.info(f"[Timing] FETCH_EMAIL_METADATA TOTAL: {time.time() - t_total:.2f}s — {len(results)} emails")
         return list(results.values())
 
     def fetch_document_text(self, msg_id: str) -> list[dict]:
         """Step 2: For a single message, download PDFs and extract text.
         Returns list of {email_subject, email_from, email_date, pdf_filename, pdf_text}.
         """
+        t_total = time.time()
         try:
+            t0 = time.time()
             detail = self._get_message_detail(msg_id)
+            logger.info(f"[Timing] _get_message_detail: {time.time() - t0:.2f}s — {detail['subject'][:50]}")
         except Exception as e:
             logger.warning(f"Failed to fetch message {msg_id}: {e}")
             return []
@@ -178,11 +221,21 @@ class GmailService:
         if not parts and detail["payload"].get("body"):
             parts = [detail["payload"]]
 
+        t0 = time.time()
         downloaded = self._download_attachments(msg_id, parts, detail["subject"])
+        logger.info(f"[Timing] _download_attachments: {time.time() - t0:.2f}s — {len(downloaded)} files")
 
         for filepath in downloaded:
             if filepath.lower().endswith(".pdf"):
+                t0 = time.time()
                 pdf_text, is_locked = self._extract_text_from_pdf(filepath)
+                pdf_elapsed = time.time() - t0
+                file_size_kb = Path(filepath).stat().st_size / 1024
+                logger.info(
+                    f"[Timing] _extract_text_from_pdf: {pdf_elapsed:.2f}s — "
+                    f"{Path(filepath).name} — {file_size_kb:.0f}KB — "
+                    f"{'LOCKED' if is_locked else f'{len(pdf_text)} chars'}"
+                )
                 if pdf_text and len(pdf_text.strip()) > 100:
                     results.append({
                         "email_subject": detail["subject"],
@@ -192,7 +245,6 @@ class GmailService:
                         "pdf_text": pdf_text,
                     })
                 elif is_locked:
-                    # Password-protected PDF — extract hint from email body/HTML
                     hint = self._extract_password_hint(detail["payload"])
                     results.append({
                         "email_subject": detail["subject"],
@@ -206,7 +258,11 @@ class GmailService:
                     })
 
         # Also check email body for policy info (some come without PDFs)
+        t0 = time.time()
         body_text = self._extract_body_text(detail["payload"])
+        body_elapsed = time.time() - t0
+        if body_elapsed > 0.1:
+            logger.info(f"[Timing] _extract_body_text: {body_elapsed:.2f}s — {len(body_text)} chars")
         if body_text and len(body_text.strip()) > 200:
             body_lower = body_text.lower()
             if any(kw in body_lower for kw in [
@@ -221,23 +277,30 @@ class GmailService:
                     "pdf_text": body_text[:10000],
                 })
 
+        logger.info(f"[Timing] FETCH_DOCUMENT_TEXT TOTAL: {time.time() - t_total:.2f}s — {len(results)} docs from {detail['subject'][:50]}")
         return results
 
     def _search_emails(self, query: str, max_results: int = 50) -> list[dict]:
         messages = []
         try:
+            t0 = time.time()
             result = self.service.users().messages().list(
                 userId="me", q=query, maxResults=max_results
             ).execute()
+            logger.info(f"[Timing] Gmail list API: {time.time() - t0:.2f}s — '{query[:40]}'")
             messages = result.get("messages", [])
 
+            page = 1
             while "nextPageToken" in result and len(messages) < max_results:
+                t0 = time.time()
                 result = self.service.users().messages().list(
                     userId="me",
                     q=query,
                     maxResults=max_results - len(messages),
                     pageToken=result["nextPageToken"],
                 ).execute()
+                page += 1
+                logger.info(f"[Timing] Gmail list API page {page}: {time.time() - t0:.2f}s")
                 messages.extend(result.get("messages", []))
         except Exception as e:
             logger.error(f"Error searching for '{query}': {e}")
@@ -245,9 +308,11 @@ class GmailService:
         return messages
 
     def _get_message_detail(self, msg_id: str) -> dict:
+        t0 = time.time()
         msg = self.service.users().messages().get(
             userId="me", id=msg_id, format="full"
         ).execute()
+        logger.info(f"[Timing] Gmail get(full) API: {time.time() - t0:.2f}s — msg_id={msg_id[:12]}")
 
         headers = {h["name"]: h["value"] for h in msg["payload"].get("headers", [])}
 
@@ -261,6 +326,7 @@ class GmailService:
         }
 
     def _download_attachments(self, msg_id: str, parts: list, email_subject: str) -> list[str]:
+        t_total = time.time()
         downloaded = []
 
         def process_parts(parts_list):
@@ -282,16 +348,31 @@ class GmailService:
                 ):
                     continue
 
-                attachment_id = part.get("body", {}).get("attachmentId")
+                body = part.get("body", {})
+                attachment_id = body.get("attachmentId")
                 if not attachment_id:
                     continue
 
+                # Gmail reports estimated size in the part body
+                est_size = body.get("size", 0)
+                est_kb = est_size / 1024 if est_size else 0
+
                 try:
+                    t0 = time.time()
                     att = self.service.users().messages().attachments().get(
                         userId="me", messageId=msg_id, id=attachment_id
                     ).execute()
+                    api_elapsed = time.time() - t0
 
+                    t_decode = time.time()
                     data = base64.urlsafe_b64decode(att["data"])
+                    decode_elapsed = time.time() - t_decode
+                    actual_kb = len(data) / 1024
+
+                    logger.info(
+                        f"[Timing] Attachment API: {api_elapsed:.2f}s, decode: {decode_elapsed:.2f}s — "
+                        f"{filename} — est:{est_kb:.0f}KB actual:{actual_kb:.0f}KB ({actual_kb/1024:.1f}MB)"
+                    )
 
                     # Ensure PDF files have .pdf extension
                     if mime_type.startswith("application/pdf") and not filename.lower().endswith(".pdf"):
@@ -314,25 +395,42 @@ class GmailService:
                     downloaded.append(str(filepath))
                     logger.info(f"Saved: {filepath.name}")
                 except Exception as e:
-                    logger.warning(f"Error downloading {filename}: {e}")
+                    logger.warning(f"Error downloading {filename} (est:{est_kb:.0f}KB): {e}")
 
         process_parts(parts)
+        logger.info(f"[Timing] _download_attachments TOTAL: {time.time() - t_total:.2f}s — {len(downloaded)} files saved")
         return downloaded
 
     def _extract_text_from_pdf(self, filepath: str) -> tuple[str, bool]:
-        """Extract text from PDF. Returns (text, is_password_protected)."""
+        """Extract text from PDF using PyMuPDF. Returns (text, is_password_protected)."""
         text = ""
+        fname = Path(filepath).name
         try:
-            with pdfplumber.open(filepath) as pdf:
-                for page in pdf.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        text += page_text + "\n"
+            t_open = time.time()
+            doc = fitz.open(filepath)
+            open_elapsed = time.time() - t_open
+            num_pages = len(doc)
+
+            if doc.is_encrypted:
+                doc.close()
+                logger.warning(f"Password-protected PDF (cannot extract): {fname}")
+                return "", True
+
+            logger.info(f"[Timing] fitz.open: {open_elapsed:.3f}s — {fname} — {num_pages} pages")
+            for i, page in enumerate(doc):
+                t_page = time.time()
+                page_text = page.get_text()
+                page_elapsed = time.time() - t_page
+                if page_elapsed > 0.5:
+                    logger.info(f"[Timing] fitz page {i+1}/{num_pages}: {page_elapsed:.2f}s — {fname}")
+                if page_text:
+                    text += page_text + "\n"
+            doc.close()
         except Exception as e:
             err_name = type(e).__name__
             err_repr = repr(e).lower()
-            if "password" in err_repr or "PDFPasswordIncorrect" in err_name:
-                logger.warning(f"Password-protected PDF (cannot extract): {Path(filepath).name}")
+            if "password" in err_repr or "encrypted" in err_repr:
+                logger.warning(f"Password-protected PDF (cannot extract): {fname}")
                 return "", True
             else:
                 logger.warning(f"Error reading PDF {filepath}: {err_name}: {e}")

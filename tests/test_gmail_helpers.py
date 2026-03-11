@@ -32,6 +32,21 @@ class TestGetSearchQueries:
         assert isinstance(queries, list)
         assert len(queries) > 0
 
+    def test_has_policy_document_indicators(self):
+        """Layer 2: generic policy document indicator queries."""
+        queries = get_search_queries()
+        combined = " ".join(queries).lower()
+        assert "policy document" in combined
+        assert "policy schedule" in combined
+        assert "certificate of insurance" in combined
+
+    def test_has_insurer_email_patterns(self):
+        """Layer 3: common Indian insurer email patterns."""
+        queries = get_search_queries()
+        combined = " ".join(queries).lower()
+        assert "thank you for choosing" in combined
+        assert "policy number" in combined
+
 
 class TestExtractBodyText:
     def test_plain_text(self, mime_payload_plain):

@@ -1,150 +1,252 @@
-"""Local ML triage using sentence-transformers (all-MiniLM-L6-v2, 22MB).
+"""Triage service: classify emails as insurance-related.
 
-Replaces Grok API triage with cosine similarity against reference phrases.
-~0.3s for 148 emails vs ~30s with API calls.
+Primary: Groq LLM (Llama 4 Scout) — fast, accurate, batched.
+Fallback: keyword-based scoring if Groq unavailable.
 """
 
+import asyncio
+import json
 import logging
+import os
 import time
+
+from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 
-# ── Positive reference phrases (what a real policy document looks like) ──
-POSITIVE_PHRASES = [
-    "your insurance policy document is ready",
-    "policy copy attached for your records",
-    "policy schedule enclosed",
-    "renewed policy document attached",
-    "policy renewal certificate",
-    "policy issuance confirmation with attached document",
-    "insurance premium payment receipt attached",
-    "premium certificate for the year",
-    "premium paid confirmation for policy",
-    "health insurance policy copy",
-    "mediclaim policy document",
-    "optima restore health policy",
-    "care freedom health plan policy",
-    "comprehensive car insurance policy document",
-    "motor insurance certificate attached",
-    "vehicle insurance policy copy",
-    "term life insurance policy copy attached",
-    "iprotect smart term plan document",
-    "term insurance certificate of insurance",
-    "policy number enclosed with document",
-    "sum insured details in attached policy",
-    "attached herewith your policy",
-]
+TRIAGE_PROMPT = """You are classifying emails to find insurance policy documents.
 
-# ── Negative reference phrases (marketing/spam patterns) ──
-NEGATIVE_PHRASES = [
-    "renew your insurance policy today special offer",
-    "your insurance is expiring buy now",
-    "lowest premium guaranteed compare plans",
-    "get health cover starting at just rupees per day",
-    "exclusive insurance offer discount",
-    "save on your insurance renewal",
-    "urgent alert policy expired renew immediately",
-    "daily trading and investment ideas newsletter",
-    "weekly market update stocks and funds",
-    "mutual fund investment SIP update",
-    "annual general meeting notice shareholders",
-    "postal ballot notice bank limited",
-    "TDS certificate form 16A dividend",
-    "credit card statement communication",
-    "hassle free healthcare claim process",
-    "need help with a claim contact us",
-    "digital platforms for policy servicing",
-]
+Mark as YES:
+- Actual policy documents, policy copies, policy certificates
+- Policy issuance/renewal confirmations with attachments
+- Premium receipts or premium paid certificates
+- Certificate of insurance documents
+- "Thank you for choosing [insurer]" emails (these ARE policy documents)
+- "Congratulations, you are now secured with [insurer]" emails
+- Emails with policy numbers that contain actual policy PDFs
+- CIS (Customer Information Sheet) verification emails from insurers
 
-# Tuned parameters (from demo_triage_v2.py sweep)
-THRESHOLD = 0.25
-NEG_WEIGHT = 0.3
-ATTACHMENT_BOOST = 0.05
+Mark as NO:
+- Marketing emails, renewal reminders without attachments, promotions
+- Newsletters, trading tips, mutual fund updates
+- Claim process guides, "how to claim" emails
+- OTP/login verification emails
+- General customer support emails
+- Bank statements, credit card emails, loan offers
+- Non-insurance emails (travel bookings, shopping, etc.)
+
+Respond with ONLY numbered YES/NO like this:
+1. YES
+2. NO
+3. YES
+...
+
+One line per email, matching the numbering."""
+
+BATCH_SIZE = 30  # emails per LLM call
 
 
 class TriageService:
-    """Classify emails as insurance-related using local sentence embeddings."""
+    """Classify emails as insurance-related using Groq LLM or keyword fallback."""
 
     def __init__(self):
+        self._client = None
         self._model = None
-        self._pos_emb = None
-        self._neg_emb = None
+        self._init_groq()
 
-    def _ensure_loaded(self):
-        if self._model is not None:
-            return
-        from sentence_transformers import SentenceTransformer
-        t0 = time.time()
-        self._model = SentenceTransformer("all-MiniLM-L6-v2")
-        self._pos_emb = self._model.encode(POSITIVE_PHRASES, convert_to_tensor=True)
-        self._neg_emb = self._model.encode(NEGATIVE_PHRASES, convert_to_tensor=True)
-        logger.info(f"Triage model loaded in {time.time() - t0:.1f}s")
+    def _init_groq(self):
+        api_key = os.getenv("GROQ_API_KEY")
+        if api_key:
+            self._client = AsyncOpenAI(
+                api_key=api_key,
+                base_url="https://api.groq.com/openai/v1",
+            )
+            self._model = "meta-llama/llama-4-scout-17b-16e-instruct"
+            logger.info("Triage: using Groq (Llama 4 Scout)")
+        else:
+            logger.warning("Triage: GROQ_API_KEY not set, using keyword fallback")
 
-    def classify_batch(
+    def _format_email(self, idx: int, meta: dict) -> str:
+        subject = meta.get("subject", "(no subject)")
+        sender = meta.get("from", "")
+        snippet = (meta.get("snippet") or "")[:150]
+        has_att = "Yes" if self._has_attachment(meta) else "No"
+        return f"{idx}. Subject: {subject}\n   From: {sender}\n   Snippet: {snippet}\n   Has attachment: {has_att}"
+
+    async def classify_batch_async(
         self, email_metadata: list[dict]
     ) -> list[tuple[bool, str, float]]:
-        """Classify a batch of emails.
-
-        Args:
-            email_metadata: list of dicts with 'subject', 'from', 'snippet' keys
-
-        Returns:
-            list of (is_relevant, reason, score) tuples
-        """
-        self._ensure_loaded()
-
+        """Classify emails using Groq LLM in batches. Falls back to keyword."""
         if not email_metadata:
             return []
 
-        # Build text for each email
-        texts = [self._build_text(m) for m in email_metadata]
+        if not self._client:
+            return [self._keyword_classify(m) for m in email_metadata]
+
+        results = [None] * len(email_metadata)
+        batches = []
+        for i in range(0, len(email_metadata), BATCH_SIZE):
+            batches.append((i, email_metadata[i:i + BATCH_SIZE]))
 
         t0 = time.time()
-        email_emb = self._model.encode(texts, convert_to_tensor=True, batch_size=32)
+        tasks = [self._classify_one_batch(start, batch) for start, batch in batches]
+        batch_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        from sentence_transformers import util
-        pos_scores = util.cos_sim(email_emb, self._pos_emb).max(dim=1).values
-        neg_scores = util.cos_sim(email_emb, self._neg_emb).max(dim=1).values
+        for (start, batch), batch_res in zip(batches, batch_results):
+            if isinstance(batch_res, Exception):
+                logger.warning(f"Groq triage batch failed: {batch_res}, using keyword fallback")
+                for j, meta in enumerate(batch):
+                    results[start + j] = self._keyword_classify(meta)
+            else:
+                for j, res in enumerate(batch_res):
+                    results[start + j] = res
+
         elapsed = time.time() - t0
+        logger.info(f"Triage: classified {len(email_metadata)} emails via Groq in {elapsed:.2f}s ({len(batches)} batches)")
+        return results
 
-        logger.info(f"Triage: classified {len(email_metadata)} emails in {elapsed:.3f}s")
+    async def _classify_one_batch(
+        self, start_idx: int, batch: list[dict]
+    ) -> list[tuple[bool, str, float]]:
+        """Send one batch to Groq and parse YES/NO responses."""
+        email_lines = "\n".join(
+            self._format_email(i + 1, m) for i, m in enumerate(batch)
+        )
+        user_msg = f"Classify these {len(batch)} emails:\n\n{email_lines}"
+
+        t0 = time.time()
+        response = await self._client.chat.completions.create(
+            model=self._model,
+            messages=[
+                {"role": "system", "content": TRIAGE_PROMPT},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0,
+            max_tokens=len(batch) * 5,  # ~4 chars per "YES\n" or "NO\n"
+        )
+        elapsed = time.time() - t0
+        usage = response.usage
+        tokens_info = f"in={usage.prompt_tokens},out={usage.completion_tokens}" if usage else ""
+        logger.info(f"[Timing] Triage Groq batch: {elapsed:.2f}s ({tokens_info}) — {len(batch)} emails")
+
+        content = response.choices[0].message.content.strip()
+
+        # Parse numbered responses: "1. YES", "2. NO", etc.
+        import re
+        parsed = {}
+        for line in content.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            m = re.match(r"(\d+)\.\s*(YES|NO)", line, re.IGNORECASE)
+            if m:
+                num = int(m.group(1))
+                parsed[num] = m.group(2).upper() == "YES"
 
         results = []
-        for i, meta in enumerate(email_metadata):
-            pos = pos_scores[i].item()
-            neg = neg_scores[i].item()
-
-            combined = pos - (NEG_WEIGHT * neg)
-            if self._has_attachment(meta):
-                combined += ATTACHMENT_BOOST
-
-            is_relevant = combined >= THRESHOLD
-
-            if is_relevant:
-                reason = f"similarity:{combined:.3f}"
+        for i, meta in enumerate(batch):
+            num = i + 1  # 1-indexed
+            if num in parsed:
+                is_yes = parsed[num]
+                results.append((is_yes, f"groq:{'yes' if is_yes else 'no'}", 1.0 if is_yes else 0.0))
             else:
-                reason = f"below_threshold:{combined:.3f}"
-
-            results.append((is_relevant, reason, combined))
+                # Missing number — fall back to keyword
+                results.append(self._keyword_classify(meta))
 
         return results
 
-    def _build_text(self, meta: dict) -> str:
-        parts = []
-        if meta.get("subject"):
-            parts.append(meta["subject"])
-        if meta.get("from"):
-            parts.append(f"From: {meta['from']}")
-        if meta.get("snippet"):
-            parts.append(meta["snippet"][:200])
-        return " | ".join(parts)
+    # ── Keyword-based fallback ─────────────────
+
+    _STRONG_POS = [
+        "policy document", "policy copy", "policy schedule", "policy certificate",
+        "renewed policy", "policy renewal", "certificate of insurance",
+        "premium receipt", "premium payment", "premium paid",
+        "policy issuance", "policy bond", "policy dispatch",
+        "your policy", "policy attached", "policy enclosed",
+        "sum insured", "insured members",
+        "thank you for choosing", "you are now secured with",
+    ]
+
+    _WEAK_POS = [
+        "health insurance", "car insurance", "motor insurance", "vehicle insurance",
+        "term insurance", "term life", "term plan", "life insurance",
+        "mediclaim", "travel insurance", "home insurance", "bike insurance",
+        "two wheeler", "comprehensive cover", "insurance policy",
+    ]
+
+    _NEGATIVE = [
+        "renew now", "buy now", "compare plans", "special offer", "discount",
+        "lowest premium", "save up to", "limited period", "offer valid",
+        "get a quote", "check premium", "calculate premium",
+        "claim process", "claim settlement", "claim form",
+        "how to file", "how to claim", "hassle free",
+        "need help", "contact us", "customer care",
+        "newsletter", "weekly update", "daily digest",
+        "trading", "investment", "mutual fund", "sip",
+        "demat", "stocks", "portfolio", "nifty", "sensex",
+        "credit card", "loan", "emi", "bank statement",
+        "tds certificate", "form 16", "itr",
+        "shareholder", "annual general meeting", "postal ballot",
+        "unsubscribe from", "view in browser",
+    ]
+
+    _INSURER_SENDERS = [
+        "hdfc ergo", "hdfcergo", "icici lombard", "icicilombard",
+        "icici prudential", "icicipru", "bajaj allianz", "bajajallianz",
+        "care health", "carehealth", "careinsurance", "star health", "starhealth",
+        "tata aig", "tataaig", "new india", "oriental", "acko",
+        "lic", "max life", "maxlife", "sbi life", "sbigeneral",
+        "policybazaar", "tacterial", "niva bupa", "nivabupa",
+        "digit insurance", "godigit", "chola ms", "cholams",
+        "reliance general", "future generali", "kotak life",
+    ]
+
+    def _keyword_classify(self, meta: dict) -> tuple[bool, str, float]:
+        """Classify a single email using keyword matching (no ML)."""
+        subject = (meta.get("subject") or "").lower()
+        sender = (meta.get("from") or "").lower()
+        snippet = (meta.get("snippet") or "").lower()[:200]
+        text = f"{subject} {snippet}"
+
+        score = 0.0
+
+        for kw in self._STRONG_POS:
+            if kw in subject:
+                score += 0.4
+                break
+
+        for kw in self._WEAK_POS:
+            if kw in subject:
+                score += 0.15
+                break
+
+        for kw in self._STRONG_POS:
+            if kw in snippet:
+                score += 0.15
+                break
+
+        for ins in self._INSURER_SENDERS:
+            if ins in sender:
+                score += 0.2
+                break
+
+        if self._has_attachment(meta):
+            score += 0.15
+
+        neg_count = 0
+        for kw in self._NEGATIVE:
+            if kw in text:
+                neg_count += 1
+        score -= neg_count * 0.15
+
+        is_relevant = score >= 0.3
+        reason = f"keyword:{score:.2f}" if is_relevant else f"keyword_below:{score:.2f}"
+        return (is_relevant, reason, score)
 
     def _has_attachment(self, meta: dict) -> bool:
         """Check for attachment signals in metadata."""
-        # SSE pipeline metadata has 'has_attachments' flag
         if meta.get("has_attachments"):
             return True
-        # Local JSON data has 'attachments' list
         attachments = meta.get("attachments", [])
         if not attachments:
             return bool(meta.get("pdf_texts"))

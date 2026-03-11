@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import datetime
 
 from openai import AsyncOpenAI
@@ -41,7 +42,7 @@ Return a JSON object with these fields:
 
 {
     "policy_number": "string",
-    "type": "health" | "car" | "term_life",
+    "type": "health" | "car" | "term_life" | "travel" | "home",
     "provider": "Insurance company name",
     "plan_name": "Plan/product name",
     "insured_members": [
@@ -53,7 +54,7 @@ Return a JSON object with these fields:
     ],
     "sum_insured": number or null,
     "premium": number or null,
-    "premium_frequency": "yearly | monthly | one_time | quarterly",
+    "premium_frequency": "yearly | monthly | one_time | quarterly | single",
     "policy_start": "YYYY-MM-DD or null",
     "policy_end": "YYYY-MM-DD or null",
     "status": "ACTIVE | EXPIRED | UNKNOWN",
@@ -74,6 +75,24 @@ RULES:
 - For term life, include nominee details and policy term.
 - Determine status: if policy_end date is in the past, mark EXPIRED. If in the future, ACTIVE. Otherwise UNKNOWN.
 - If the document is not an insurance policy (e.g., marketing email, newsletter, bank statement), return exactly: {"skip": true}
+
+IMPORTANT — DATES:
+- If the document contains multiple policy periods (e.g., original and renewal), always use the LATEST policy period dates.
+- For multi-year policies (e.g., 2-year or 3-year), set policy_end to the FINAL expiry date, not an intermediate year.
+- Look carefully for "Policy Period", "Period of Insurance", "Risk Start Date / End Date" fields.
+
+IMPORTANT — PREMIUM:
+- Return the TOTAL premium amount INCLUDING all taxes (GST, IGST, service tax).
+- If only base premium and tax are shown separately, ADD them together.
+- For multi-year policies paid as single payment, set premium to the TOTAL amount paid and premium_frequency to "single".
+
+IMPORTANT — SUM INSURED:
+- For health insurance, return the TOTAL sum insured including all benefits (base + secure benefit + plus benefit + restore benefit etc.)
+- If the policy shows "Base Sum Insured" and additional benefits that increase the effective cover, sum them all up.
+
+IMPORTANT — PLAN NAME:
+- Use ONLY the official product/plan name (e.g., "Optima Secure Individual", "Care Freedom - Plan 2").
+- Do NOT include email subject text, prefixes like "my:", "Re:", marketing language, or renewal notices in the plan name.
 
 Return ONLY valid JSON. No markdown, no explanations."""
 
@@ -128,11 +147,21 @@ def _strip_json(content: str) -> str:
 
 class PipelineService:
     def __init__(self):
-        self.client = AsyncOpenAI(
-            api_key=os.getenv("XAI_API_KEY"),
-            base_url="https://api.x.ai/v1",
-        )
-        self.model = "grok-4-1-fast-reasoning"
+        # Use Groq if available (faster + cheaper), fall back to xAI Grok
+        if os.getenv("GROQ_API_KEY"):
+            self.client = AsyncOpenAI(
+                api_key=os.getenv("GROQ_API_KEY"),
+                base_url="https://api.groq.com/openai/v1",
+            )
+            self.model = "meta-llama/llama-4-scout-17b-16e-instruct"
+            logger.info("Using Groq (Llama 4 Scout) for extraction")
+        else:
+            self.client = AsyncOpenAI(
+                api_key=os.getenv("XAI_API_KEY"),
+                base_url="https://api.x.ai/v1",
+            )
+            self.model = "grok-4-1-fast-non-reasoning"
+            logger.info("Using xAI Grok for extraction")
         self._triage = TriageService()
 
     # ── Stage 1: Triage (local ML) ───────────────────
@@ -144,6 +173,7 @@ class PipelineService:
         user_id: int | None = None,
     ):
         """Yield progress events. Final event has type='stage_complete' with relevant_emails."""
+        t_stage = time.time()
         skip_msg_ids = skip_msg_ids or set()
 
         # Partition into cached vs new
@@ -167,14 +197,15 @@ class PipelineService:
                 "type": "progress",
                 "stage": "triage",
                 "pct": 10,
-                "message": f"Classifying {total} emails locally...",
+                "message": f"Classifying {total} emails via Groq...",
             }
 
-            # Run local ML triage (batch, ~0.3s for all emails)
-            results = await asyncio.to_thread(
-                self._triage.classify_batch, new_emails
-            )
+            # Run Groq LLM triage (batched, ~2-3s for all emails)
+            t0 = time.time()
+            results = await self._triage.classify_batch_async(new_emails)
+            logger.info(f"[Timing] Triage classify_batch: {time.time() - t0:.2f}s for {total} emails")
 
+            t0 = time.time()
             for i, (is_relevant, reason, score) in enumerate(results):
                 meta = new_emails[i]
                 if is_relevant:
@@ -192,6 +223,7 @@ class PipelineService:
                         )
                     except Exception as e:
                         logger.warning(f"Failed to save triage for {meta['msg_id']}: {e}")
+            logger.info(f"[Timing] Triage DB saves: {time.time() - t0:.2f}s for {total} emails")
 
             yield {
                 "type": "progress",
@@ -200,6 +232,9 @@ class PipelineService:
                 "message": f"Classified {total} emails: {len(relevant)} relevant",
             }
 
+        elapsed = time.time() - t_stage
+        logger.info(f"[Timing] TRIAGE TOTAL: {elapsed:.2f}s — {len(relevant)} relevant, {skipped} skipped, {cached_count} cached")
+
         yield {
             "type": "stage_complete",
             "stage": "triage",
@@ -207,7 +242,7 @@ class PipelineService:
             "skipped": skipped,
             "cached": cached_count,
             "relevant_emails": relevant,
-            "message": f"Triage done: {len(relevant)} relevant, {skipped} skipped, {cached_count} cached",
+            "message": f"Triage done in {elapsed:.1f}s: {len(relevant)} relevant, {skipped} skipped, {cached_count} cached",
         }
 
     # ── Stage 2: Extract ─────────────────────────────
@@ -220,9 +255,10 @@ class PipelineService:
         user_id: int | None = None,
         vault_key_derived: bytes | None = None,
     ):
-        """Download PDFs sequentially (Gmail API not thread-safe), then send to Grok concurrently.
+        """Download PDFs sequentially (Gmail API not thread-safe), then send to LLM concurrently.
         Yields progress events. Final event has type='stage_complete' with raw_policies.
         """
+        t_stage = time.time()
         skip_msg_ids = skip_msg_ids or set()
         new_emails = [m for m in relevant_emails if m["msg_id"] not in skip_msg_ids]
         cached_count = len(relevant_emails) - len(new_emails)
@@ -236,24 +272,108 @@ class PipelineService:
                 "message": f"{cached_count} cached extractions, processing {total} new...",
             }
 
-        # Step 2a: Download all PDFs sequentially (Gmail API shares one SSL connection)
-        all_docs = []
-        for i, meta in enumerate(new_emails):
-            yield {
-                "type": "progress",
-                "stage": "extract",
-                "current": i,
-                "total": total,
-                "pct": int(35 + (i / max(total, 1)) * 20),
-                "message": f"Downloading {i + 1}/{total}: {meta['subject'][:40]}...",
-            }
-            docs = await asyncio.to_thread(gmail_service.fetch_document_text, meta["msg_id"])
-            # Tag each doc with its parent msg_id
-            for doc in docs:
-                doc["_msg_id"] = meta["msg_id"]
-            all_docs.extend(docs)
+        # Deduplicate emails by msg_id (same email can appear in multiple triage passes)
+        seen_ids = set()
+        deduped = []
+        for m in new_emails:
+            if m["msg_id"] not in seen_ids:
+                seen_ids.add(m["msg_id"])
+                deduped.append(m)
+        if len(deduped) < len(new_emails):
+            logger.info(f"[Extract] Deduped {len(new_emails)} → {len(deduped)} emails")
+            new_emails = deduped
+            total = len(new_emails)
 
-        if not all_docs and cached_count == 0:
+        # Process emails in batches: download PDF, extract via LLM, discard PDF text
+        # This keeps memory bounded instead of loading all PDFs at once
+        BATCH_SIZE = 5
+        raw_policies = []
+        llm_completed = 0
+        total_download_time = 0.0
+        total_llm_time = 0.0
+
+        for batch_start in range(0, total, BATCH_SIZE):
+            batch_emails = new_emails[batch_start:batch_start + BATCH_SIZE]
+            batch_docs = []
+
+            # Download PDFs for this batch (with 60s timeout per email)
+            DOWNLOAD_TIMEOUT = 60
+            for i, meta in enumerate(batch_emails):
+                global_idx = batch_start + i
+                yield {
+                    "type": "progress",
+                    "stage": "extract",
+                    "current": global_idx,
+                    "total": total,
+                    "pct": int(35 + (global_idx / max(total, 1)) * 20),
+                    "message": f"Downloading {global_idx + 1}/{total}: {meta['subject'][:40]}...",
+                }
+                t0 = time.time()
+                try:
+                    docs = await asyncio.wait_for(
+                        asyncio.to_thread(gmail_service.fetch_document_text, meta["msg_id"]),
+                        timeout=DOWNLOAD_TIMEOUT,
+                    )
+                except asyncio.TimeoutError:
+                    dl_elapsed = time.time() - t0
+                    total_download_time += dl_elapsed
+                    logger.warning(f"[Timing] Download {global_idx + 1}/{total}: TIMEOUT after {dl_elapsed:.1f}s — {meta['subject'][:50]}")
+                    continue
+                dl_elapsed = time.time() - t0
+                total_download_time += dl_elapsed
+                logger.info(f"[Timing] Download {global_idx + 1}/{total}: {dl_elapsed:.2f}s — {meta['subject'][:50]}")
+                for doc in docs:
+                    doc["_msg_id"] = meta["msg_id"]
+                batch_docs.extend(docs)
+
+            logger.info(f"[Timing] Batch download done: {len(batch_docs)} docs from {len(batch_emails)} emails")
+
+            # Extract this batch via LLM concurrently
+            if batch_docs:
+                sem = asyncio.Semaphore(EXTRACT_CONCURRENCY)
+
+                async def llm_one(doc):
+                    nonlocal llm_completed, total_llm_time
+                    async with sem:
+                        t0 = time.time()
+                        result = await self._grok_extract(doc)
+                        llm_elapsed = time.time() - t0
+                        total_llm_time += llm_elapsed
+                        llm_completed += 1
+                        status = "extracted" if result else "skipped"
+                        logger.info(f"[Timing] LLM {llm_completed}/{total}: {llm_elapsed:.2f}s — {status} — {doc['pdf_filename'][:50]}")
+                        if result:
+                            raw_policies.append(result)
+                            if user_id is not None and vault_key_derived is not None:
+                                msg_id = doc.get("_msg_id")
+                                if msg_id:
+                                    try:
+                                        await db_service.save_extraction_result(
+                                            msg_id, user_id, result, vault_key_derived
+                                        )
+                                    except Exception as e:
+                                        logger.warning(f"Failed to save extraction for {msg_id}: {e}")
+                    return {
+                        "type": "progress",
+                        "stage": "extract",
+                        "pct": int(55 + (llm_completed / max(total, 1)) * 30),
+                        "message": f"Extracted {llm_completed}/{total}: {doc['pdf_filename'][:40]}...",
+                    }
+
+                tasks = [asyncio.create_task(llm_one(d)) for d in batch_docs]
+                for coro in asyncio.as_completed(tasks):
+                    event = await coro
+                    yield event
+            # batch_docs goes out of scope, freeing PDF text memory
+
+        elapsed = time.time() - t_stage
+        logger.info(
+            f"[Timing] EXTRACT TOTAL: {elapsed:.2f}s — "
+            f"downloads: {total_download_time:.2f}s, LLM calls: {total_llm_time:.2f}s, "
+            f"{len(raw_policies)} extracted, {cached_count} cached"
+        )
+
+        if not raw_policies and cached_count == 0:
             yield {
                 "type": "stage_complete",
                 "stage": "extract",
@@ -264,55 +384,17 @@ class PipelineService:
             }
             return
 
-        # Step 2b: Send to Grok concurrently (async HTTP is fine)
-        sem = asyncio.Semaphore(EXTRACT_CONCURRENCY)
-        grok_total = len(all_docs)
-        completed = 0
-        raw_policies = []
-
-        async def grok_one(doc):
-            nonlocal completed
-            async with sem:
-                result = await self._grok_extract(doc)
-                completed += 1
-                if result:
-                    raw_policies.append(result)
-                    # Save extraction to DB (encrypted)
-                    if user_id is not None and vault_key_derived is not None:
-                        msg_id = doc.get("_msg_id")
-                        if msg_id:
-                            try:
-                                await db_service.save_extraction_result(
-                                    msg_id, user_id, result, vault_key_derived
-                                )
-                            except Exception as e:
-                                logger.warning(f"Failed to save extraction for {msg_id}: {e}")
-                return {
-                    "type": "progress",
-                    "stage": "extract",
-                    "current": completed,
-                    "total": grok_total,
-                    "pct": int(55 + (completed / max(grok_total, 1)) * 30),
-                    "message": f"Analyzing {completed}/{grok_total}: {doc['pdf_filename'][:40]}...",
-                }
-
-        if grok_total > 0:
-            tasks = [asyncio.create_task(grok_one(d)) for d in all_docs]
-            for coro in asyncio.as_completed(tasks):
-                event = await coro
-                yield event
-
         yield {
             "type": "stage_complete",
             "stage": "extract",
             "count": len(raw_policies),
             "cached": cached_count,
             "raw_policies": raw_policies,
-            "message": f"Extracted {len(raw_policies)} new, {cached_count} cached",
+            "message": f"Extracted {len(raw_policies)} new + {cached_count} cached in {elapsed:.1f}s",
         }
 
     async def _grok_extract(self, doc: dict) -> dict | None:
-        """Send a single document's text to Grok for extraction."""
+        """Send a single document's text to the LLM for extraction."""
         is_locked = doc.get("_password_protected", False)
         truncated = doc["pdf_text"][:15000]
         user_msg = (
@@ -321,6 +403,7 @@ class PipelineService:
             f"Document text:\n{truncated}"
         )
         try:
+            t0 = time.time()
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[
@@ -330,6 +413,11 @@ class PipelineService:
                 temperature=0,
                 max_tokens=2000,
             )
+            api_elapsed = time.time() - t0
+            usage = response.usage
+            tokens_info = f"in={usage.prompt_tokens},out={usage.completion_tokens}" if usage else "no-usage"
+            logger.info(f"[Timing] LLM API call: {api_elapsed:.2f}s ({tokens_info}) — {doc['pdf_filename'][:50]}")
+
             content = _strip_json(response.choices[0].message.content.strip())
             result = json.loads(content)
             if result and not result.get("skip"):
@@ -339,16 +427,18 @@ class PipelineService:
                 if is_locked:
                     result["password_protected"] = True
                     result["locked_pdf_path"] = doc.get("_locked_pdf_path", "")
-                    # Prefer hint extracted from email body, fall back to generic
                     email_hint = doc.get("_password_hint", "")
                     result["password_hint"] = email_hint or _get_password_hint(
                         doc.get("email_from", ""), result.get("provider", "")
                     )
                 return result
+            else:
+                logger.info(f"[Timing] LLM returned skip for {doc['pdf_filename'][:50]}")
+                return None
         except json.JSONDecodeError as e:
             logger.error(f"JSON parse error for {doc['pdf_filename']}: {e}")
         except Exception as e:
-            logger.error(f"Grok API error for {doc['pdf_filename']}: {e}")
+            logger.error(f"LLM API error for {doc['pdf_filename']}: {e}")
         return None
 
     # ── Stage 3: Finalize ────────────────────────────
@@ -360,10 +450,13 @@ class PipelineService:
     ) -> list[dict]:
         """Deduplicate and fix statuses using deterministic local logic.
         Merges new raw_policies with existing cached extractions before dedup."""
+        t0 = time.time()
         combined = list(existing_policies or []) + list(raw_policies)
         if not combined:
             return []
-        return self._local_dedup(combined)
+        result = self._local_dedup(combined)
+        logger.info(f"[Timing] FINALIZE: {time.time() - t0:.2f}s — {len(combined)} input → {len(result)} output")
+        return result
 
     def _local_dedup(self, policies: list[dict]) -> list[dict]:
         """Deduplicate policies using normalized policy numbers."""
@@ -392,7 +485,7 @@ class PipelineService:
             return cleaned
 
         def _merge(winner, loser):
-            """Fill null fields in winner from loser."""
+            """Fill null fields in winner from loser, and prefer better values for key fields."""
             skip_keys = ('status', 'source_pdf', 'source_email', 'source_msg_id',
                          'password_protected', 'locked_pdf_path', 'password_hint')
             for key in loser:
@@ -400,6 +493,24 @@ class PipelineService:
                     continue
                 if winner.get(key) is None and loser.get(key) is not None:
                     winner[key] = loser[key]
+            # Always prefer the LATER policy_end (even if winner already has one)
+            w_end = winner.get("policy_end") or ""
+            l_end = loser.get("policy_end") or ""
+            if l_end > w_end:
+                winner["policy_end"] = loser["policy_end"]
+                # Also take the matching start date if available
+                if loser.get("policy_start"):
+                    winner["policy_start"] = loser["policy_start"]
+            # Prefer higher sum_insured (covers total with benefits vs base only)
+            w_si = winner.get("sum_insured") or 0
+            l_si = loser.get("sum_insured") or 0
+            if isinstance(l_si, (int, float)) and isinstance(w_si, (int, float)) and l_si > w_si:
+                winner["sum_insured"] = loser["sum_insured"]
+            # Prefer higher premium (total with tax vs base without)
+            w_pr = winner.get("premium") or 0
+            l_pr = loser.get("premium") or 0
+            if isinstance(l_pr, (int, float)) and isinstance(w_pr, (int, float)) and l_pr > w_pr:
+                winner["premium"] = loser["premium"]
             # If either side is non-locked, drop the locked flag from winner
             if not loser.get("password_protected") or not winner.get("password_protected"):
                 winner.pop("password_protected", None)
@@ -420,10 +531,21 @@ class PipelineService:
             pn = normalize_pn(p.get("policy_number", ""))
             key = pn if pn else f"_no_pn_{id(p)}"
 
+            # Log raw extraction for debugging
+            logger.info(
+                f"[Dedup] Input: pn={p.get('policy_number')} key={key} "
+                f"start={p.get('policy_start')} end={p.get('policy_end')} "
+                f"status={p.get('status')} src={p.get('source_email', '')[:50]}"
+            )
+
             if key in seen:
                 existing = seen[key]
                 existing_active = existing.get("status") == "ACTIVE"
                 new_active = p.get("status") == "ACTIVE"
+                logger.info(
+                    f"[Dedup] Merging key={key}: existing_end={existing.get('policy_end')} "
+                    f"new_end={p.get('policy_end')} existing_active={existing_active} new_active={new_active}"
+                )
                 if new_active and not existing_active:
                     seen[key] = _merge(p, existing)
                 elif not new_active and existing_active:
@@ -440,6 +562,11 @@ class PipelineService:
                         seen[key] = _merge(p, existing)
                     else:
                         seen[key] = _merge(existing, p)
+                merged = seen[key]
+                logger.info(
+                    f"[Dedup] Result key={key}: end={merged.get('policy_end')} "
+                    f"status={merged.get('status')} src={merged.get('source_email', '')[:50]}"
+                )
             else:
                 seen[key] = p
 
@@ -458,4 +585,12 @@ class PipelineService:
             provider = (p.get("provider") or "").lower()
             if plan.strip() in LIC_PLAN_NAMES and "lic" in provider:
                 p["plan_name"] = LIC_PLAN_NAMES[plan.strip()]
+            # Clean garbled plan names (strip email subject artifacts)
+            if plan:
+                # Remove common prefixes from email subjects
+                cleaned = re.sub(r'^(my:\s*|re:\s*|fwd:\s*|fw:\s*)', '', plan, flags=re.IGNORECASE).strip()
+                # Remove "Welcome Renew :" etc.
+                cleaned = re.sub(r'^(welcome\s+renew\s*:?\s*)', '', cleaned, flags=re.IGNORECASE).strip()
+                if cleaned and cleaned != plan:
+                    p["plan_name"] = cleaned
         return result

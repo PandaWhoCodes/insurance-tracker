@@ -20,7 +20,7 @@ class TestTriage:
     @pytest.mark.asyncio
     async def test_skips_known_msg_ids(self):
         pipeline = _make_pipeline_service()
-        pipeline._triage.classify_batch.return_value = []
+        pipeline._triage.classify_batch_async = AsyncMock(return_value=[])
 
         metadata = [
             {"msg_id": "known_1", "subject": "Old email", "from": "a@b.com", "snippet": "s", "date": "2025-01-01"},
@@ -31,19 +31,19 @@ class TestTriage:
         async for event in pipeline.triage(metadata, skip_msg_ids={"known_1"}):
             events.append(event)
 
-        # classify_batch should only receive the new email
-        pipeline._triage.classify_batch.assert_called_once()
-        classified_emails = pipeline._triage.classify_batch.call_args[0][0]
+        # classify_batch_async should only receive the new email
+        pipeline._triage.classify_batch_async.assert_awaited_once()
+        classified_emails = pipeline._triage.classify_batch_async.call_args[0][0]
         assert len(classified_emails) == 1
         assert classified_emails[0]["msg_id"] == "new_1"
 
     @pytest.mark.asyncio
     async def test_classifies_new_emails(self):
         pipeline = _make_pipeline_service()
-        pipeline._triage.classify_batch.return_value = [
-            (True, "similarity:0.45", 0.45),
-            (False, "below_threshold:0.10", 0.10),
-        ]
+        pipeline._triage.classify_batch_async = AsyncMock(return_value=[
+            (True, "groq:yes", 1.0),
+            (False, "groq:no", 0.0),
+        ])
 
         metadata = [
             {"msg_id": "m1", "subject": "Policy copy", "from": "a@b.com", "snippet": "s", "date": "2025-01-01"},
@@ -65,9 +65,9 @@ class TestTriage:
     async def test_saves_to_db_when_user_id_set(self, mock_db):
         mock_db.save_triage_result = AsyncMock()
         pipeline = _make_pipeline_service()
-        pipeline._triage.classify_batch.return_value = [
-            (True, "similarity:0.45", 0.45),
-        ]
+        pipeline._triage.classify_batch_async = AsyncMock(return_value=[
+            (True, "groq:yes", 1.0),
+        ])
 
         metadata = [
             {"msg_id": "m1", "subject": "Policy", "from": "a@b.com", "snippet": "s", "date": "2025-01-01"},
@@ -76,7 +76,7 @@ class TestTriage:
         async for _ in pipeline.triage(metadata, user_id=42):
             pass
 
-        mock_db.save_triage_result.assert_awaited_once_with("m1", 42, True, "similarity:0.45")
+        mock_db.save_triage_result.assert_awaited_once_with("m1", 42, True, "groq:yes")
 
     @pytest.mark.asyncio
     async def test_all_cached_yields_stage_complete(self):
@@ -109,6 +109,7 @@ class TestGrokExtract:
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = json.dumps(policy_json)
+        mock_response.usage = MagicMock(prompt_tokens=100, completion_tokens=50)
         pipeline.client.chat.completions.create = AsyncMock(return_value=mock_response)
 
         doc = {
@@ -130,6 +131,7 @@ class TestGrokExtract:
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = json.dumps({"skip": True})
+        mock_response.usage = MagicMock(prompt_tokens=100, completion_tokens=10)
         pipeline.client.chat.completions.create = AsyncMock(return_value=mock_response)
 
         doc = {"pdf_filename": "junk.pdf", "email_subject": "Not a policy", "pdf_text": "Junk text"}
@@ -143,6 +145,7 @@ class TestGrokExtract:
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "Not valid JSON at all"
+        mock_response.usage = MagicMock(prompt_tokens=100, completion_tokens=10)
         pipeline.client.chat.completions.create = AsyncMock(return_value=mock_response)
 
         doc = {"pdf_filename": "bad.pdf", "email_subject": "Bad", "pdf_text": "text"}
@@ -157,6 +160,7 @@ class TestGrokExtract:
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = json.dumps(policy_json)
+        mock_response.usage = MagicMock(prompt_tokens=100, completion_tokens=50)
         pipeline.client.chat.completions.create = AsyncMock(return_value=mock_response)
 
         doc = {
@@ -182,6 +186,7 @@ class TestGrokExtract:
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = json.dumps(policy_json)
+        mock_response.usage = MagicMock(prompt_tokens=100, completion_tokens=50)
         pipeline.client.chat.completions.create = AsyncMock(return_value=mock_response)
 
         doc = {

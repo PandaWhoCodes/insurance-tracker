@@ -32,10 +32,13 @@ DATA_DIR = BASE_DIR / "data"
 TOKENS_DIR = DATA_DIR / "tokens"
 TOKENS_DIR.mkdir(parents=True, exist_ok=True)
 
-SCOPES = [
-    "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/userinfo.email",
+BASIC_SCOPES = [
     "openid",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
+]
+GMAIL_SCOPES = BASIC_SCOPES + [
+    "https://www.googleapis.com/auth/gmail.readonly",
 ]
 
 app = FastAPI()
@@ -66,7 +69,7 @@ def _redirect_uri():
     return f"{base}/auth/callback"
 
 
-def create_oauth_flow() -> Flow:
+def create_oauth_flow(scopes=None) -> Flow:
     client_config = {
         "web": {
             "client_id": os.getenv("GOOGLE_CLIENT_ID"),
@@ -76,9 +79,21 @@ def create_oauth_flow() -> Flow:
             "redirect_uris": [_redirect_uri()],
         }
     }
-    flow = Flow.from_client_config(client_config, scopes=SCOPES)
+    flow = Flow.from_client_config(client_config, scopes=scopes or BASIC_SCOPES)
     flow.redirect_uri = _redirect_uri()
     return flow
+
+
+def _token_has_gmail_scope(token_path: Path) -> bool:
+    """Check if a stored token includes gmail.readonly scope."""
+    if not token_path.exists():
+        return False
+    try:
+        token_data = json.loads(token_path.read_text())
+        scopes = token_data.get("scopes", [])
+        return any("gmail.readonly" in s for s in scopes)
+    except Exception:
+        return False
 
 
 # ── Routes ──────────────────────────────────────────────────
@@ -109,15 +124,30 @@ async def terms():
 
 @app.get("/auth/login")
 async def login(request: Request):
-    flow = create_oauth_flow()
+    flow = create_oauth_flow(BASIC_SCOPES)
     authorization_url, state = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",
     )
     request.session["oauth_state"] = state
-    # Store PKCE code_verifier so callback can use it
     request.session["code_verifier"] = flow.code_verifier
+    request.session["oauth_scopes"] = "basic"
+    return RedirectResponse(authorization_url)
+
+
+@app.get("/auth/gmail")
+async def gmail_auth(request: Request):
+    """Second OAuth flow to add Gmail read scope."""
+    flow = create_oauth_flow(GMAIL_SCOPES)
+    authorization_url, state = flow.authorization_url(
+        access_type="offline",
+        include_granted_scopes="true",
+        prompt="consent",
+    )
+    request.session["oauth_state"] = state
+    request.session["code_verifier"] = flow.code_verifier
+    request.session["oauth_scopes"] = "gmail"
     return RedirectResponse(authorization_url)
 
 
@@ -125,7 +155,9 @@ async def login(request: Request):
 async def callback(request: Request):
     import os as _os
     _os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
-    flow = create_oauth_flow()
+    # Recreate flow with the same scopes used for the request
+    requested_scopes = GMAIL_SCOPES if request.session.get("oauth_scopes") == "gmail" else BASIC_SCOPES
+    flow = create_oauth_flow(requested_scopes)
     # Restore PKCE code_verifier from session
     flow.code_verifier = request.session.get("code_verifier")
     # Fly proxy terminates TLS, so request.url is http:// but redirect_uri is https://
@@ -173,15 +205,18 @@ async def get_me(request: Request):
     email = request.session.get("user_email")
     if not email:
         return JSONResponse({"authenticated": False}, status_code=401)
+    token_path = TOKENS_DIR / f"{email}.json"
+    has_gmail = _token_has_gmail_scope(token_path)
     return {
         "authenticated": True,
         "email": email,
         "name": request.session.get("user_name", email),
+        "has_gmail": has_gmail,
     }
 
 
 @app.get("/api/policies")
-async def get_policies(request: Request, vault_key: str = "Ashish"):
+async def get_policies(request: Request, vault_key: str = ""):
     email = request.session.get("user_email")
     if not email:
         return JSONResponse({"error": "Not authenticated"}, status_code=401)
@@ -198,6 +233,13 @@ async def get_policies(request: Request, vault_key: str = "Ashish"):
     if turso_db._client is not None:
         try:
             user_id = await db_service.get_or_create_user(email)
+            # Check if user has stored data but didn't provide vault key
+            user = await db_service.get_user(user_id)
+            if user and user["vault_hash"] and not vault_key:
+                return JSONResponse({"need_vault_key": True}, status_code=200)
+            # Don't verify (and accidentally set) vault key if it's empty
+            if not vault_key:
+                return JSONResponse({"policies": [], "fetched_at": None, "from_cache": True}, status_code=200)
             vault_key_derived = await db_service.verify_vault_key(user_id, vault_key)
             policies = await db_service.load_final_policies(user_id, vault_key_derived)
             if policies:
@@ -207,6 +249,10 @@ async def get_policies(request: Request, vault_key: str = "Ashish"):
                     "fetched_at": None,
                     "from_cache": True,
                 }
+        except ValueError as e:
+            if "Wrong vault key" in str(e):
+                return JSONResponse({"error": "Wrong vault key", "wrong_key": True}, status_code=200)
+            logger.warning(f"Failed to load policies from DB: {e}")
         except Exception as e:
             logger.warning(f"Failed to load policies from DB: {e}")
 
@@ -259,10 +305,18 @@ def sse_keepalive() -> str:
 
 
 @app.get("/api/policies/refresh-stream")
-async def refresh_stream(request: Request, vault_key: str = "Ashish", force: bool = False):
+async def refresh_stream(request: Request, vault_key: str = "", force: bool = False):
     email = request.session.get("user_email")
     if not email:
         return JSONResponse({"error": "Not authenticated"}, status_code=401)
+
+    # Check Gmail scope before starting the stream
+    token_path = TOKENS_DIR / f"{email}.json"
+    if not _token_has_gmail_scope(token_path):
+        return JSONResponse(
+            {"error": "Gmail access not connected. Please connect Gmail first.", "need_gmail": True},
+            status_code=403,
+        )
 
     user_name = request.session.get("user_name", email)
 
@@ -422,9 +476,21 @@ async def refresh_stream(request: Request, vault_key: str = "Ashish", force: boo
             if not cached_extractions:
                 logger.info("No cached extractions available")
 
-            logger.info(f"Finalizing {len(raw_policies)} new + {len(cached_extractions)} cached")
+            # Also load previously saved final policies (includes unlocked PDFs)
+            # so that unlocked data isn't lost when re-encountering locked PDFs
+            prev_final = []
+            if vault_key_derived is not None and user_id is not None:
+                try:
+                    prev_final = await db_service.load_final_policies(user_id, vault_key_derived)
+                    if prev_final:
+                        logger.info(f"Loaded {len(prev_final)} previous final policies for merge")
+                except Exception as e:
+                    logger.warning(f"Failed to load previous final policies: {e}")
+
+            all_existing = list(cached_extractions) + list(prev_final or [])
+            logger.info(f"Finalizing {len(raw_policies)} new + {len(all_existing)} existing")
             final_policies = await pipeline.finalize(
-                raw_policies, existing_policies=cached_extractions
+                raw_policies, existing_policies=all_existing
             )
             logger.info(f"Finalized: {len(final_policies)} policies")
 
@@ -500,14 +566,33 @@ async def unlock_pdf(request: Request):
     body = await request.json()
     pdf_path = body.get("pdf_path", "")
     password = body.get("password", "")
-    vault_key = body.get("vault_key", "Ashish")
+    vault_key = body.get("vault_key", "")
+    msg_id = body.get("msg_id", "")
 
-    if not pdf_path or not password:
-        return JSONResponse({"error": "Missing pdf_path or password"}, status_code=400)
+    if not password:
+        return JSONResponse({"error": "Missing password"}, status_code=400)
 
-    # Security: ensure the path is within the attachments directory
     import fitz  # PyMuPDF
     attachments_dir = str(BASE_DIR / "attachments")
+
+    # If PDF file doesn't exist locally, re-download from Gmail using msg_id
+    if (not pdf_path or not Path(pdf_path).exists()) and msg_id:
+        try:
+            gmail = GmailService(email)
+            downloaded = gmail.redownload_attachment(msg_id)
+            if downloaded:
+                pdf_path = downloaded[0]  # Use the first PDF
+                logger.info(f"Re-downloaded PDF for unlock: {pdf_path}")
+            else:
+                return JSONResponse({"error": "Could not re-download PDF from Gmail. Try refreshing from Gmail first."}, status_code=404)
+        except Exception as e:
+            logger.warning(f"Failed to re-download PDF for unlock: {e}")
+            return JSONResponse({"error": "Could not re-download PDF from Gmail. Try refreshing from Gmail first."}, status_code=404)
+
+    if not pdf_path:
+        return JSONResponse({"error": "PDF file not found"}, status_code=404)
+
+    # Security: ensure the path is within the attachments directory
     resolved = str(Path(pdf_path).resolve())
     if not resolved.startswith(attachments_dir):
         return JSONResponse({"error": "Invalid path"}, status_code=403)
@@ -607,7 +692,7 @@ async def upload_pdf(
     request: Request,
     file: UploadFile = File(...),
     password: str = Form(""),
-    vault_key: str = Form("Ashish"),
+    vault_key: str = Form(""),
 ):
     """Upload a PDF policy document manually."""
     email = request.session.get("user_email")

@@ -124,6 +124,39 @@ PASSWORD_HINTS = {
 }
 
 
+def _extract_policy_number_from_subject(subject: str) -> str | None:
+    """Try to extract a policy number from an email subject line."""
+    m = re.search(r'(?:policy\s*(?:no\.?|number)\s*:?\s*)([A-Z0-9/\-]+)', subject, re.IGNORECASE)
+    return m.group(1).strip() if m else None
+
+
+def _guess_provider(email_from: str, subject: str) -> str:
+    """Guess the insurance provider from email sender or subject."""
+    combined = (email_from + " " + subject).lower()
+    providers = [
+        ("kotak", "Kotak Life"),
+        ("hdfc ergo", "HDFC ERGO"),
+        ("hdfc life", "HDFC Life"),
+        ("icici pru", "ICICI Prudential"),
+        ("icici lombard", "ICICI Lombard"),
+        ("lic", "LIC"),
+        ("max life", "Max Life"),
+        ("sbi life", "SBI Life"),
+        ("bajaj allianz", "Bajaj Allianz"),
+        ("tata aia", "Tata AIA"),
+        ("care health", "Care Health"),
+        ("star health", "Star Health"),
+        ("acko", "Acko"),
+        ("royal sundaram", "Royal Sundaram"),
+        ("niva bupa", "Niva Bupa"),
+        ("digit", "Go Digit"),
+    ]
+    for key, name in providers:
+        if key in combined:
+            return name
+    return "Unknown Provider"
+
+
 def _get_password_hint(email_from: str, provider: str) -> str:
     """Return a password hint based on the insurer."""
     combined = ((email_from or "") + " " + (provider or "")).lower()
@@ -434,6 +467,22 @@ class PipelineService:
                 return result
             else:
                 logger.info(f"[Timing] LLM returned skip for {doc['pdf_filename'][:50]}")
+                # If PDF was locked, still surface it as a locked card
+                if is_locked:
+                    pn = _extract_policy_number_from_subject(doc.get("email_subject", ""))
+                    email_hint = doc.get("_password_hint", "")
+                    return {
+                        "provider": _guess_provider(doc.get("email_from", ""), doc.get("email_subject", "")),
+                        "policy_number": pn,
+                        "password_protected": True,
+                        "locked_pdf_path": doc.get("_locked_pdf_path", ""),
+                        "password_hint": email_hint or _get_password_hint(
+                            doc.get("email_from", ""), ""
+                        ),
+                        "source_pdf": doc["pdf_filename"],
+                        "source_email": doc["email_subject"],
+                        "source_msg_id": doc.get("_msg_id", ""),
+                    }
                 return None
         except json.JSONDecodeError as e:
             logger.error(f"JSON parse error for {doc['pdf_filename']}: {e}")

@@ -1,28 +1,18 @@
 # Insurance Tracker — Future Roadmap
 
-## 1. Document Upload Mode
+## 1. Document Upload Mode ✅
 
-**Problem:** Currently the app requires Gmail read access just to get started. Many users won't want to grant email permissions upfront — they just want to manually add a policy.
+**Status:** Done.
 
-**Solution:** Two modes of adding policies:
-
-### Mode A: Manual Upload
-- User signs in with Google (basic profile scope only — email + name)
-- Upload policy PDFs directly from their device
-- Same AI extraction pipeline runs on the uploaded PDF
-- No Gmail permissions needed
-
-### Mode B: Gmail Scan (current flow)
-- User explicitly opts in to Gmail scanning
-- Triggers a **second OAuth flow** with the additional `gmail.readonly` scope
-- Works exactly as it does today
-
-### Implementation Notes
-- **Progressive scopes:** Initial login requests only `openid` + `userinfo.email`. Gmail scope requested separately only when user clicks "Scan Gmail".
-- **Upload endpoint:** `POST /api/policies/upload` accepting multipart PDF files
-- **Reuse extraction pipeline:** `PipelineService.extract()` already handles PDF text → Grok → structured policy. Upload mode just skips the Gmail fetch and triage stages.
-- **UI:** Add an "Upload Policy" button alongside "Refresh from Gmail" in the header. Drop zone or file picker in a modal.
-- **Storage:** Uploaded PDFs could be stored encrypted in Turso (as blobs) or just processed and discarded like Gmail PDFs.
+- [x] Upload PDF button in header alongside "Refresh from Gmail"
+- [x] `POST /api/policies/upload` endpoint with multipart PDF support
+- [x] Password-protected PDF handling (prompts for password, retries)
+- [x] Reuses extraction pipeline (`_grok_extract` + `finalize` for dedup)
+- [x] Progressive OAuth scopes — login requests only basic profile, Gmail scope is opt-in
+- [x] "Connect Gmail" button when Gmail scope not granted, "Refresh from Gmail" when granted
+- [x] Vault key modal with helper text (replaces hardcoded default, warns about data loss)
+- [x] User-friendly progress messages (no technical jargon like "Groq", "triage", etc.)
+- [x] Documents auto-deleted after processing
 
 
 ## 2. Multi-Email Scanning
@@ -74,11 +64,88 @@
 - Calendar integration (add renewal dates to Google Calendar)
 
 
-## 4. Other Ideas (Lower Priority)
+## 4. Google OAuth Verification
+
+**Status:** Partially done — needs manual GCP steps before resubmitting.
+
+### Issues from previous verification attempt:
+1. **Domain ownership not verified** — `insurance-hut.fly.dev` is not registered to us.
+2. **Home page behind login** — The home page must show app information without requiring login.
+3. **App name mismatch** — OAuth consent screen says "insurance-hut" but the home page doesn't match.
+
+### Done:
+- [x] Custom domain: `policies.life` with Fly.io certs, `BASE_URL` secret set
+- [x] Public landing page with hero, "How it works", "Built on trust" sections — no login required
+- [x] App rebranded to "Policies.life" across all pages (index, privacy, terms, how-it-works)
+
+### Still needed (manual GCP steps):
+- [ ] Verify `policies.life` domain ownership in Google Search Console
+- [ ] Update OAuth consent screen app name to "Policies.life"
+- [ ] Resubmit for verification
+
+
+## 5. Export to PDF ✅
+
+**Status:** Done.
+
+- [x] "Export PDF" button below summary bar (right-aligned, subtle ghost style)
+- [x] Client-side PDF via jsPDF + autoTable (CDN loaded, no build system)
+- [x] Styled PDF: header with branding + date, summary stats, per-policy sections
+- [x] All fields: policy number, type, period, sum insured, premium, members, vehicle, nominee, coverages, notes
+- [x] Sorted by status (Active → Expiring Soon → Expired)
+- [x] Locked policies show minimal info (provider, policy number, "Password Protected")
+- [x] Hidden policies excluded
+- [x] Page numbers on every page
+
+
+## 6. SEO & Social Meta Tags
+
+- [x] Add `<meta name="description">` with app summary
+- [x] Add Open Graph tags (`og:title`, `og:description`, `og:image`, `og:url`) for link previews on Facebook/LinkedIn/WhatsApp
+- [x] Add Twitter Card tags (`twitter:card`, `twitter:title`, `twitter:description`, `twitter:image`)
+- [ ] Add a social preview image (1200x630) — clean branded card with "Policies.life" + tagline → drop as `/static/og-image.png`
+- [x] Add `<link rel="canonical" href="https://policies.life/">`
+- [x] Add favicon / apple-touch-icon (inline SVG favicon, apple-touch-icon path ready)
+- [x] Add structured data (JSON-LD) for SoftwareApplication schema
+
+
+## 7. Encrypted Cache (Cross-Device Persistence) ✅
+
+**Status:** Done.
+
+- [x] DB fallback: `GET /api/policies` falls back to Turso when file cache misses
+- [x] Vault key prompt on load: If DB has encrypted data but no vault key in session, prompts user
+- [x] Wrong vault key handling: Clears sessionStorage, re-prompts, gives helpful error after 2 failures
+- [x] Cache warming: After successful DB load, warms the file cache for fast subsequent loads
+- [x] Save flow: Refresh, upload, and unlock all save to both file cache and Turso DB
+
+
+## 8. Mobile UX Overhaul ✅ (partial)
+
+**Status:** Core mobile layout done. Some items remain.
+
+### Done:
+- [x] Header: overflow ⋯ menu with Upload PDF, Refresh from Gmail, Logout
+- [x] Modals → bottom sheets with slide-up animation + swipe-to-dismiss
+- [x] Filter bar: horizontal scroll
+- [x] Touch targets: 44px minimum, active scale transforms
+- [x] Safe areas: `env(safe-area-inset-bottom)` on footer, modals, toast
+- [x] iOS zoom prevention: 16px font on all inputs
+- [x] Sub-pages (how-it-works, privacy, terms) mobile-responsive
+
+### Remaining:
+- [ ] **Empty state on mobile:** Show "Fetch from Gmail" or "Upload Documents" buttons on the empty state screen so mobile users have a clear CTA (currently only accessible via ⋯ menu)
+- [ ] **Screen-off / connection loss (mobile only):** When phone screen turns off during refresh (~60s auto-lock), SSE connection drops and UI shows "Connection lost." Server keeps running and saves to DB, but client never gets the `done` event.
+  - **Wake Lock API:** Request `navigator.wakeLock.request('screen')` during refresh to prevent screen-off (Chrome Android, Safari iOS 16.4+, fails silently elsewhere)
+  - **Auto-recover:** On `es.onerror` (mobile only — detect via `'ontouchstart' in window` or screen width), poll `GET /api/policies` every 3s up to 10 times to check if server finished
+  - **Visibility recovery:** `visibilitychange` listener — when page becomes visible while `isRefreshing`, check if EventSource closed and trigger poll
+  - **UX:** Show "Reconnecting..." during poll, then render results or show "Try reloading in a minute"
+
+
+## 9. Other Ideas (Lower Priority)
 
 - **Policy comparison:** Side-by-side comparison of health plans (coverage, premium, sum insured)
 - **Renewal tracking:** Track premium payment history across years
 - **Family view:** Group policies by family member
-- **Export:** Download all policy data as PDF summary or CSV
 - **PWA:** Make the app installable on mobile with offline support
 - **Claim tracker:** Track claim submissions and status alongside policies

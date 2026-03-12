@@ -2,8 +2,49 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Insurance Tracker</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Policies.life — All your insurance policies in one place</title>
+    <meta name="description" content="Track all your insurance policies — health, car, term life — in one clean dashboard. No more digging through emails. Free to use.">
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://policies.life/">
+    <meta property="og:title" content="Policies.life — All your insurance policies in one place">
+    <meta property="og:description" content="Track all your insurance policies — health, car, term life — in one clean dashboard. No more digging through emails.">
+    <meta property="og:image" content="https://policies.life/static/og-image.png">
+    <meta property="og:site_name" content="Policies.life">
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Policies.life — All your insurance policies in one place">
+    <meta name="twitter:description" content="Track all your insurance policies — health, car, term life — in one clean dashboard. No more digging through emails.">
+    <meta name="twitter:image" content="https://policies.life/static/og-image.png">
+
+    <!-- Canonical -->
+    <link rel="canonical" href="https://policies.life/">
+
+    <!-- Favicon -->
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect x='10' y='10' width='80' height='80' rx='12' fill='%232eaadc' stroke='%23fff' stroke-width='0'/><text x='50' y='68' font-size='52' font-family='Arial' font-weight='bold' fill='white' text-anchor='middle'>P</text></svg>">
+    <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+
+    <!-- Structured Data -->
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "Policies.life",
+        "url": "https://policies.life",
+        "description": "Track all your insurance policies — health, car, term life — in one clean dashboard. No more digging through emails.",
+        "applicationCategory": "FinanceApplication",
+        "operatingSystem": "Web",
+        "offers": {
+            "@type": "Offer",
+            "price": "0",
+            "priceCurrency": "INR"
+        }
+    }
+    </script>
+
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -11,74 +52,103 @@
 </head>
 <body>
     <div id="app">
-        <!-- Login Screen with Onboarding Slider -->
+        <!-- Landing Page (visible to everyone, no login required) -->
         <div id="login-screen" class="login-screen hidden">
-            <div class="onboarding-card">
-                <div class="onboarding-slides" id="onboarding-slides">
-                    <!-- Slide 1: Intro -->
-                    <div class="slide active" data-slide="0">
-                        <div class="slide-icon">
-                            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
-                        </div>
-                        <h1>Insurance Tracker</h1>
-                        <p class="slide-text">All your insurance policies — health, car, term life — in one clean dashboard. No more digging through emails.</p>
+            <div class="landing">
+                <!-- Hero -->
+                <section class="landing-hero">
+                    <div class="landing-logo">
+                        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
                     </div>
-
-                    <!-- Slide 2: How it works -->
-                    <div class="slide" data-slide="1">
-                        <div class="slide-icon">
-                            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" stroke-width="1.5"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
-                        </div>
-                        <h2>We scan your Gmail</h2>
-                        <p class="slide-text">We search your inbox for insurance emails, filter out marketing, and automatically extract policy details from your PDFs.</p>
-                        <a href="/how-it-works" class="slide-link">See the full pipeline &rarr;</a>
-                    </div>
-
-                    <!-- Slide 3: Privacy -->
-                    <div class="slide" data-slide="2">
-                        <div class="slide-icon">
-                            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="1.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1"/></svg>
-                        </div>
-                        <h2>Your data stays yours</h2>
-                        <div class="slide-points">
-                            <div class="slide-point"><span class="point-dot green"></span>Read-only Gmail access — we never modify emails</div>
-                            <div class="slide-point"><span class="point-dot green"></span>Policy data encrypted with your personal vault key</div>
-                            <div class="slide-point"><span class="point-dot green"></span>Uploaded documents are automatically deleted within 15 minutes</div>
-                            <div class="slide-point"><span class="point-dot green"></span>No vault key stored — only you can read your data</div>
-                        </div>
-                        <a href="/privacy" class="slide-link">Read our Privacy Policy &rarr;</a>
-                    </div>
-
-                    <!-- Slide 4: Sign in -->
-                    <div class="slide" data-slide="3">
-                        <div class="slide-icon">
-                            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--text)" stroke-width="1.5"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
-                        </div>
-                        <h2>Ready to get started</h2>
-                        <p class="slide-text">Sign in with your Google account to scan your Gmail for insurance policies. You can revoke access anytime.</p>
-                        <button id="login-btn" class="btn btn-primary" onclick="window.location.href='/auth/login'" style="margin-top: 20px;">
-                            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12.545,10.239v3.821h5.445c-0.712,2.315-2.647,3.972-5.445,3.972c-3.332,0-6.033-2.701-6.033-6.032s2.701-6.032,6.033-6.032c1.498,0,2.866,0.549,3.921,1.453l2.814-2.814C17.503,2.988,15.139,2,12.545,2C7.021,2,2.543,6.477,2.543,12s4.478,10,10.002,10c8.396,0,10.249-7.85,9.426-11.748L12.545,10.239z"/></svg>
-                            Sign in with Google
-                        </button>
-                    </div>
-                </div>
-
-                <!-- Navigation -->
-                <div class="onboarding-nav">
-                    <button class="nav-btn nav-prev" id="slide-prev" onclick="slideNav(-1)" disabled>
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M11.354 1.646a.5.5 0 0 1 0 .708L5.707 8l5.647 5.646a.5.5 0 0 1-.708.708l-6-6a.5.5 0 0 1 0-.708l6-6a.5.5 0 0 1 .708 0z"/></svg>
+                    <h1 class="landing-title">Policies.life</h1>
+                    <p class="landing-subtitle">All your insurance policies &mdash; health, car, term life &mdash; in one clean dashboard. No more digging through emails.</p>
+                    <button class="btn btn-primary landing-cta" onclick="window.location.href='/auth/login'">
+                        <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M12.545,10.239v3.821h5.445c-0.712,2.315-2.647,3.972-5.445,3.972c-3.332,0-6.033-2.701-6.033-6.032s2.701-6.032,6.033-6.032c1.498,0,2.866,0.549,3.921,1.453l2.814-2.814C17.503,2.988,15.139,2,12.545,2C7.021,2,2.543,6.477,2.543,12s4.478,10,10.002,10c8.396,0,10.249-7.85,9.426-11.748L12.545,10.239z"/></svg>
+                        Get started with Google
                     </button>
-                    <div class="slide-dots" id="slide-dots">
-                        <span class="dot active" onclick="goToSlide(0)"></span>
-                        <span class="dot" onclick="goToSlide(1)"></span>
-                        <span class="dot" onclick="goToSlide(2)"></span>
-                        <span class="dot" onclick="goToSlide(3)"></span>
+                    <p class="landing-hint">Free to use. No credit card required.</p>
+                </section>
+
+                <!-- How it works -->
+                <section class="landing-section">
+                    <p class="landing-section-label">How it works</p>
+                    <div class="landing-steps">
+                        <div class="landing-step">
+                            <div class="landing-step-icon" style="background: var(--blue-bg); color: #2576a5;">
+                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
+                            </div>
+                            <h3>Connect your Gmail</h3>
+                            <p>We scan your inbox for insurance emails. Or skip this and upload policy PDFs directly.</p>
+                        </div>
+                        <div class="landing-step">
+                            <div class="landing-step-icon" style="background: var(--orange-bg); color: var(--orange);">
+                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                            </div>
+                            <h3>We extract the details</h3>
+                            <p>Policy number, dates, coverage, premium, insured members &mdash; all pulled from your PDFs automatically.</p>
+                        </div>
+                        <div class="landing-step">
+                            <div class="landing-step-icon" style="background: var(--green-bg); color: var(--green);">
+                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
+                            </div>
+                            <h3>See everything in one place</h3>
+                            <p>A clean dashboard with status, expiry dates, and all the details you need &mdash; no more spreadsheets.</p>
+                        </div>
                     </div>
-                    <button class="nav-btn nav-next" id="slide-next" onclick="slideNav(1)">
-                        Next
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M4.646 1.646a.5.5 0 0 1 .708 0l6 6a.5.5 0 0 1 0 .708l-6 6a.5.5 0 0 1-.708-.708L10.293 8 4.646 2.354a.5.5 0 0 1 0-.708z"/></svg>
+                </section>
+
+                <!-- Trust / Privacy -->
+                <section class="landing-section">
+                    <p class="landing-section-label">Built on trust</p>
+                    <div class="landing-trust">
+                        <div class="landing-trust-item">
+                            <div class="landing-trust-icon green">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                            </div>
+                            <div>
+                                <h4>Your vault key never leaves your browser</h4>
+                                <p>Your policies are encrypted with a personal vault key that only you know. We never store it, never transmit it, and have no way to read your data without it.</p>
+                            </div>
+                        </div>
+                        <div class="landing-trust-item">
+                            <div class="landing-trust-icon green">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                            </div>
+                            <div>
+                                <h4>We can't see your policies</h4>
+                                <p>All policy data stored in our database is encrypted. Without your vault key, it's unreadable &mdash; even to us. If you lose your key, we can't recover your data.</p>
+                            </div>
+                        </div>
+                        <div class="landing-trust-item">
+                            <div class="landing-trust-icon green">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                            </div>
+                            <div>
+                                <h4>Read-only Gmail access</h4>
+                                <p>We request the minimum permissions needed. Gmail access is read-only &mdash; we never modify, delete, or send emails. And it's completely optional.</p>
+                            </div>
+                        </div>
+                        <div class="landing-trust-item">
+                            <div class="landing-trust-icon green">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                            </div>
+                            <div>
+                                <h4>Documents auto-deleted</h4>
+                                <p>Uploaded PDFs are processed and automatically deleted within 15 minutes. We don't keep copies of your policy documents.</p>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- CTA -->
+                <section class="landing-section landing-bottom-cta">
+                    <h2>Ready to get organized?</h2>
+                    <p>Sign in to start tracking your policies. You can revoke access anytime from your <a href="https://myaccount.google.com/permissions" target="_blank">Google Account settings</a>.</p>
+                    <button class="btn btn-primary landing-cta" onclick="window.location.href='/auth/login'">
+                        <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M12.545,10.239v3.821h5.445c-0.712,2.315-2.647,3.972-5.445,3.972c-3.332,0-6.033-2.701-6.033-6.032s2.701-6.032,6.033-6.032c1.498,0,2.866,0.549,3.921,1.453l2.814-2.814C17.503,2.988,15.139,2,12.545,2C7.021,2,2.543,6.477,2.543,12s4.478,10,10.002,10c8.396,0,10.249-7.85,9.426-11.748L12.545,10.239z"/></svg>
+                        Get started with Google
                     </button>
-                </div>
+                </section>
             </div>
         </div>
 
@@ -91,16 +161,38 @@
                 </div>
                 <div class="header-right">
                     <span id="user-name" class="user-name"></span>
-                    <button id="upload-btn" class="btn btn-secondary" onclick="document.getElementById('pdf-upload-input').click()">
-                        <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path d="M7.646 1.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 2.707V11.5a.5.5 0 0 1-1 0V2.707L5.354 4.854a.5.5 0 1 1-.708-.708l3-3z"/></svg>
-                        Upload PDF
-                    </button>
                     <input type="file" id="pdf-upload-input" accept=".pdf" style="display:none" onchange="handlePdfUpload(this)">
-                    <button id="refresh-btn" class="btn btn-secondary" onclick="refreshPolicies(true)">
-                        <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/><path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/></svg>
-                        Refresh from Gmail
+                    <!-- Desktop buttons -->
+                    <div class="header-actions">
+                        <button id="upload-btn" class="btn btn-secondary" onclick="document.getElementById('pdf-upload-input').click()">
+                            <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path d="M7.646 1.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 2.707V11.5a.5.5 0 0 1-1 0V2.707L5.354 4.854a.5.5 0 1 1-.708-.708l3-3z"/></svg>
+                            Upload PDF
+                        </button>
+                        <button id="refresh-btn" class="btn btn-secondary" onclick="refreshPolicies(true)">
+                            <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/><path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/></svg>
+                            Refresh from Gmail
+                        </button>
+                        <button class="btn btn-ghost" onclick="doLogout()">Logout</button>
+                    </div>
+                    <!-- Mobile overflow menu -->
+                    <button class="btn btn-ghost mobile-menu-btn" id="mobile-menu-btn" aria-label="Actions menu">
+                        <svg viewBox="0 0 16 16" fill="currentColor" width="18" height="18"><circle cx="3" cy="8" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="13" cy="8" r="1.5"/></svg>
                     </button>
-                    <button class="btn btn-ghost" onclick="window.location.href='/auth/logout'">Logout</button>
+                    <div class="mobile-menu" id="mobile-menu">
+                        <button class="mobile-menu-item" onclick="document.getElementById('pdf-upload-input').click(); closeMobileMenu();">
+                            <svg viewBox="0 0 16 16" fill="currentColor" width="16" height="16"><path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path d="M7.646 1.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 2.707V11.5a.5.5 0 0 1-1 0V2.707L5.354 4.854a.5.5 0 1 1-.708-.708l3-3z"/></svg>
+                            Upload PDF
+                        </button>
+                        <button class="mobile-menu-item" id="mobile-refresh-btn" onclick="refreshPolicies(true); closeMobileMenu();">
+                            <svg viewBox="0 0 16 16" fill="currentColor" width="16" height="16"><path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/><path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/></svg>
+                            <span>Refresh from Gmail</span>
+                        </button>
+                        <div class="mobile-menu-divider"></div>
+                        <button class="mobile-menu-item" onclick="doLogout()">
+                            <svg viewBox="0 0 16 16" fill="currentColor" width="16" height="16"><path d="M10 12.5a.5.5 0 0 1-.5.5h-8a.5.5 0 0 1-.5-.5v-9a.5.5 0 0 1 .5-.5h8a.5.5 0 0 1 .5.5v2a.5.5 0 0 0 1 0v-2A1.5 1.5 0 0 0 9.5 2h-8A1.5 1.5 0 0 0 0 3.5v9A1.5 1.5 0 0 0 1.5 14h8a1.5 1.5 0 0 0 1.5-1.5v-2a.5.5 0 0 0-1 0v2z"/><path d="M15.854 8.354a.5.5 0 0 0 0-.708l-3-3a.5.5 0 0 0-.708.708L14.293 7.5H5.5a.5.5 0 0 0 0 1h8.793l-2.147 2.146a.5.5 0 0 0 .708.708l3-3z"/></svg>
+                            Logout
+                        </button>
+                    </div>
                 </div>
             </div>
 
@@ -153,6 +245,8 @@
         <a href="/terms">Terms</a>
     </footer>
 
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/3.0.3/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/5.0.2/jspdf.plugin.autotable.min.js"></script>
     <script src="/static/app.js"></script>
 </body>
 </html>

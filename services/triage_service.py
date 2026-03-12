@@ -20,11 +20,14 @@ Mark as YES:
 - Actual policy documents, policy copies, policy certificates
 - Policy issuance/renewal confirmations with attachments
 - Premium receipts or premium paid certificates
+- Bonus letters, renewal notices, premium deposit receipts from insurers
 - Certificate of insurance documents
 - "Thank you for choosing [insurer]" emails (these ARE policy documents)
 - "Congratulations, you are now secured with [insurer]" emails
 - Emails with policy numbers that contain actual policy PDFs
 - CIS (Customer Information Sheet) verification emails from insurers
+- Forwarded (Fwd:) versions of any of the above — treat "Fwd:" the same as the original
+- "Communication for Policy no ..." emails from insurers (these contain policy documents)
 
 Mark as NO:
 - Marketing emails, renewal reminders without attachments, promotions

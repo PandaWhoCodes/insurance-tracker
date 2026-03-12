@@ -3,7 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>How It Works - Insurance Tracker</title>
+    <title>How It Works - Policies.life</title>
+    <meta name="description" content="Learn how Policies.life scans your Gmail or accepts PDF uploads to automatically extract and organize all your insurance policies.">
+    <meta property="og:title" content="How It Works - Policies.life">
+    <meta property="og:description" content="Learn how Policies.life scans your Gmail or accepts PDF uploads to automatically extract and organize all your insurance policies.">
+    <meta property="og:url" content="https://policies.life/how-it-works">
+    <meta property="og:image" content="https://policies.life/static/og-image.png">
+    <link rel="canonical" href="https://policies.life/how-it-works">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect x='10' y='10' width='80' height='80' rx='12' fill='%232eaadc'/><text x='50' y='68' font-size='52' font-family='Arial' font-weight='bold' fill='white' text-anchor='middle'>P</text></svg>">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -249,6 +256,15 @@
             .pipeline-arrow { justify-content: center; transform: rotate(90deg); padding: 4px 0; }
             .trust-grid { grid-template-columns: 1fr; }
         }
+        @media (max-width: 428px) {
+            .hiw-page { padding: 24px 16px 60px; }
+            .hiw-title { font-size: 26px; }
+            .hiw-subtitle { font-size: 14px; margin-bottom: 32px; }
+            .flow-diagram { font-size: 11px; padding: 16px; line-height: 1.8; }
+            .search-terms { padding: 16px; }
+            .faq-q { font-size: 13px; }
+            .faq-a { font-size: 12px; }
+        }
     </style>
 </head>
 <body>
@@ -260,7 +276,7 @@
 
         <h1 class="hiw-title">How It Works</h1>
         <p class="hiw-subtitle">
-            Insurance Tracker scans your Gmail for policy documents, extracts the details using AI, and shows them in one dashboard. Your data never leaves your control.
+            Policies.life scans your Gmail for policy documents, extracts the details using AI, and shows them in one dashboard. Your data never leaves your control.
         </p>
 
         <!-- Pipeline Visualization -->
@@ -383,7 +399,7 @@
             </div>
             <div class="faq-item">
                 <div class="faq-q">Can I revoke access?</div>
-                <div class="faq-a">Yes. Visit your <a href="https://myaccount.google.com/permissions" target="_blank" style="color: var(--accent);">Google Account permissions</a> and remove Insurance Tracker. Your cached data in the database will remain encrypted and unreadable without your vault key.</div>
+                <div class="faq-a">Yes. Visit your <a href="https://myaccount.google.com/permissions" target="_blank" style="color: var(--accent);">Google Account permissions</a> and remove Policies.life. Your cached data in the database will remain encrypted and unreadable without your vault key.</div>
             </div>
         </div>
     </div>

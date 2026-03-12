@@ -1,7 +1,16 @@
+// ── Logout ──────────────────────────────────────
+function doLogout() {
+    sessionStorage.removeItem('vault_key');
+    window.location.href = '/auth/logout';
+}
+
 // ── API ─────────────────────────────────────────
 const API = {
     me: () => fetch('/api/me').then(r => r.json()),
-    policies: () => fetch('/api/policies').then(r => r.ok ? r.json() : null),
+    policies: (vaultKey) => {
+        const vk = vaultKey || sessionStorage.getItem('vault_key') || '';
+        return fetch('/api/policies?vault_key=' + encodeURIComponent(vk)).then(r => r.ok ? r.json() : null);
+    },
     refresh: () => fetch('/api/policies/refresh', { method: 'POST' }).then(r => {
         if (!r.ok) return r.json().then(e => { throw new Error(e.error || 'Refresh failed'); });
         return r.json();
@@ -14,6 +23,62 @@ let allPolicies = [];
 let currentFilter = 'all';
 let hiddenPolicies = new Set();
 let currentUserEmail = null;
+let hasGmailScope = false;
+
+// ── Vault Key ──────────────────────────────────
+function getVaultKey() {
+    const cached = sessionStorage.getItem('vault_key');
+    if (cached) return Promise.resolve(cached);
+
+    return new Promise((resolve) => {
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        overlay.innerHTML = `
+        <div class="modal vault-key-modal" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <h2>Enter your vault key</h2>
+                <button class="modal-close" id="vk-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p class="vk-description">Your vault key encrypts all policy data stored on our servers. Without it, your data is unreadable — even to us.</p>
+                <div class="vk-warning">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                    <span>If you lose your vault key, your data <strong>cannot be recovered</strong>. There is no reset option. Please remember it.</span>
+                </div>
+                <input type="text" id="vk-input" class="vk-input" placeholder="Enter your vault key" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                <button class="btn btn-primary vk-submit" id="vk-submit">Continue</button>
+            </div>
+        </div>`;
+
+        const mc = document.getElementById('modal-container');
+        mc.appendChild(overlay);
+        enableBottomSheetSwipe(mc);
+
+        const input = document.getElementById('vk-input');
+        const submit = document.getElementById('vk-submit');
+        const close = document.getElementById('vk-close');
+
+        input.focus();
+
+        function confirm() {
+            const key = input.value.trim();
+            if (!key) { input.focus(); return; }
+            sessionStorage.setItem('vault_key', key);
+            overlay.remove();
+            resolve(key);
+        }
+
+        function cancel() {
+            overlay.remove();
+            resolve(null);
+        }
+
+        submit.addEventListener('click', confirm);
+        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') confirm(); });
+        close.addEventListener('click', cancel);
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) cancel(); });
+    });
+}
 
 // ── Init ────────────────────────────────────────
 async function init() {
@@ -21,8 +86,11 @@ async function init() {
         const user = await API.me();
         if (user.authenticated) {
             currentUserEmail = user.email;
+            hasGmailScope = !!user.has_gmail;
             loadHiddenPolicies();
+            updateLandingCtas(true);
             showMainScreen(user);
+            updateGmailButton();
             await loadPolicies();
         } else {
             showLoginScreen();
@@ -43,11 +111,51 @@ function showMainScreen(user) {
     document.getElementById('user-name').textContent = user.name || user.email;
 }
 
+function updateLandingCtas(loggedIn) {
+    document.querySelectorAll('.landing-cta').forEach(btn => {
+        if (loggedIn) {
+            btn.textContent = 'My Policies';
+            btn.onclick = () => {
+                document.getElementById('login-screen').classList.add('hidden');
+                document.getElementById('main-screen').classList.remove('hidden');
+            };
+        }
+    });
+}
+
 // ── Load Policies ───────────────────────────────
 async function loadPolicies() {
-    const data = await API.policies();
+    let data = await API.policies();
+
+    // DB has encrypted data but no vault key provided — prompt for it
+    if (data && data.need_vault_key) {
+        const vk = await getVaultKey();
+        if (vk) {
+            data = await API.policies(vk);
+        } else {
+            data = null;
+        }
+    }
+
+    // Wrong vault key — clear it and re-prompt
+    if (data && data.wrong_key) {
+        sessionStorage.removeItem('vault_key');
+        showToast('Wrong vault key. Please try again.');
+        const vk = await getVaultKey();
+        if (vk) {
+            data = await API.policies(vk);
+            if (data && data.wrong_key) {
+                sessionStorage.removeItem('vault_key');
+                showToast('Wrong vault key. Upload a PDF or refresh from Gmail to start fresh.');
+                data = null;
+            }
+        } else {
+            data = null;
+        }
+    }
+
     if (data && data.policies && data.policies.length > 0) {
-        allPolicies = data.policies.filter(p => p.policy_number || p.policy_end);
+        allPolicies = data.policies.filter(p => p.policy_number || p.policy_end || p.password_protected);
         const visible = allPolicies.filter(p => !hiddenPolicies.has(p.policy_number));
         renderSummary(visible);
         renderFiltered();
@@ -150,12 +258,35 @@ function renderFiltered() {
     updateHiddenChip();
 }
 
+// ── Gmail Button ───────────────────────────────
+function updateGmailButton() {
+    const btn = document.getElementById('refresh-btn');
+    const mobileBtn = document.getElementById('mobile-refresh-btn');
+    if (hasGmailScope) {
+        const icon = '<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/><path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/></svg>';
+        btn.innerHTML = icon + ' Refresh from Gmail';
+        if (mobileBtn) mobileBtn.innerHTML = icon + ' <span>Refresh from Gmail</span>';
+    } else {
+        const icon = '<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M0 4a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V4zm2-1a1 1 0 0 0-1 1v.217l7 4.2 7-4.2V4a1 1 0 0 0-1-1H2zm13 2.383-4.708 2.825L15 11.105V5.383zm-.034 6.876-5.64-3.471L8 9.583l-1.326-.795-5.64 3.47A1 1 0 0 0 2 13h12a1 1 0 0 0 .966-.741zM1 11.105l4.708-2.897L1 5.383v5.722z"/></svg>';
+        btn.innerHTML = icon + ' Connect Gmail';
+        if (mobileBtn) mobileBtn.innerHTML = icon + ' <span>Connect Gmail</span>';
+    }
+}
+
 // ── Refresh (SSE) ──────────────────────────────
-function refreshPolicies(forceRefresh = false) {
+async function refreshPolicies(forceRefresh = false) {
     if (isRefreshing) return;
 
-    const vaultKey = prompt('Enter vault key:', 'Ashish');
-    if (vaultKey === null) return; // cancelled
+    if (!hasGmailScope) {
+        window.location.href = '/auth/gmail';
+        return;
+    }
+
+    const vaultKey = await getVaultKey();
+    if (!vaultKey) {
+        showToast('Vault key is required to continue. Click the button to try again.');
+        return;
+    }
 
     isRefreshing = true;
     const _refreshStart = Date.now();
@@ -271,10 +402,13 @@ async function handlePdfUpload(input) {
 }
 
 async function uploadPdf(file, password) {
+    const vaultKey = await getVaultKey();
+    if (!vaultKey) return { error: 'Vault key is required. Please try uploading again.' };
+
     const form = new FormData();
     form.append('file', file);
     if (password) form.append('password', password);
-    form.append('vault_key', 'Ashish');
+    form.append('vault_key', vaultKey);
 
     const resp = await fetch('/api/policies/upload', { method: 'POST', body: form });
     const data = await resp.json();
@@ -333,6 +467,243 @@ function completeStage(stage) {
     });
 }
 
+// ── Premium Calculation ─────────────────────────
+function annualizePremium(p) {
+    if (!p.premium || (p.status || '').toUpperCase() === 'EXPIRED') {
+        return { annual: 0, explanation: 'Expired — not counted' };
+    }
+    const freq = (p.premium_frequency || '').toLowerCase();
+    if (freq === 'monthly') return { annual: p.premium * 12, explanation: `${formatCurrency(p.premium)} × 12 months` };
+    if (freq === 'quarterly') return { annual: p.premium * 4, explanation: `${formatCurrency(p.premium)} × 4 quarters` };
+    if (freq === 'half-yearly' || freq === 'semi-annual') return { annual: p.premium * 2, explanation: `${formatCurrency(p.premium)} × 2` };
+    if (freq === 'yearly' || freq === 'annual') return { annual: p.premium, explanation: `${formatCurrency(p.premium)}/year` };
+    if (p.policy_start && p.policy_end) {
+        const years = Math.max(1, Math.round((new Date(p.policy_end) - new Date(p.policy_start)) / (365.25 * 86400000)));
+        if (years > 1) return { annual: p.premium / years, explanation: `${formatCurrency(p.premium)} ÷ ${years} years` };
+    }
+    return { annual: p.premium, explanation: `${formatCurrency(p.premium)}/year` };
+}
+
+// ── Export to PDF ──────────────────────────────
+function exportPDF() {
+    if (!window.jspdf) { showToast('PDF library not loaded. Please try again.'); return; }
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF('p', 'mm', 'a4');
+    const pageW = doc.internal.pageSize.getWidth();
+    const pageH = doc.internal.pageSize.getHeight();
+    const margin = 16;
+    const contentW = pageW - margin * 2;
+    let y = margin;
+
+    const policies = allPolicies.filter(p => !hiddenPolicies.has(p.policy_number));
+    if (!policies.length) { showToast('No policies to export.'); return; }
+
+    // Sort: Active → Expiring Soon → Expired
+    const statusOrder = { 'ACTIVE': 0, 'EXPIRED': 2 };
+    policies.sort((a, b) => {
+        const aStatus = (a.status || 'UNKNOWN').toUpperCase();
+        const bStatus = (b.status || 'UNKNOWN').toUpperCase();
+        let aOrder = statusOrder[aStatus] ?? 1;
+        let bOrder = statusOrder[bStatus] ?? 1;
+        const aDays = daysUntil(a.policy_end);
+        const bDays = daysUntil(b.policy_end);
+        if (aStatus === 'ACTIVE' && aDays !== null && aDays <= 90) aOrder = 0.5;
+        if (bStatus === 'ACTIVE' && bDays !== null && bDays <= 90) bOrder = 0.5;
+        return aOrder - bOrder;
+    });
+
+    // Summary stats
+    const active = policies.filter(p => (p.status || '').toUpperCase() === 'ACTIVE').length;
+    const expiring = policies.filter(p => {
+        const d = daysUntil(p.policy_end);
+        return d !== null && d > 0 && d <= 90;
+    }).length;
+    const totalPremium = Math.round(policies.reduce((s, p) => s + annualizePremium(p).annual, 0));
+
+    function drawHeader() {
+        doc.setFontSize(18);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(30, 30, 30);
+        doc.text('Policies.life', margin, y);
+        doc.setFontSize(9);
+        doc.setFont('helvetica', 'normal');
+        doc.setTextColor(120);
+        doc.text(new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' }), pageW - margin, y, { align: 'right' });
+        y += 3;
+        doc.setDrawColor(220);
+        doc.line(margin, y, pageW - margin, y);
+        y += 6;
+    }
+
+    function checkPageBreak(needed) {
+        if (y + needed > pageH - 20) {
+            doc.addPage();
+            y = margin;
+            drawHeader();
+        }
+    }
+
+    function fmtCurrency(amt) {
+        if (!amt) return '---';
+        return 'Rs ' + Number(amt).toLocaleString('en-IN');
+    }
+
+    function fmtDate(d) {
+        if (!d) return '---';
+        try { return new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }); }
+        catch { return d; }
+    }
+
+    // Page 1: header + user + summary
+    drawHeader();
+    if (currentUserEmail) {
+        doc.setFontSize(9);
+        doc.setTextColor(120);
+        doc.text(currentUserEmail, margin, y);
+        y += 6;
+    }
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(80);
+    let summaryText = `${active} Active`;
+    if (expiring) summaryText += `  |  ${expiring} Expiring Soon`;
+    summaryText += `  |  Annual Premium: ${fmtCurrency(totalPremium)}`;
+    doc.text(summaryText, margin, y);
+    y += 10;
+
+    // Render each policy
+    policies.forEach((p) => {
+        checkPageBreak(40);
+
+        // Section header
+        const status = (p.status || 'UNKNOWN').toUpperCase();
+        const title = [p.provider, p.plan_name].filter(Boolean).join(' \u2014 ') || 'Unknown Policy';
+        doc.setFontSize(11);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(30);
+        doc.text(title, margin, y, { maxWidth: contentW - 30 });
+        doc.setFontSize(8);
+        doc.setFont('helvetica', 'normal');
+        const statusColor = status === 'ACTIVE' ? [34, 139, 34] : status === 'EXPIRED' ? [180, 60, 60] : [120, 120, 120];
+        doc.setTextColor(...statusColor);
+        doc.text(status, pageW - margin, y, { align: 'right' });
+        y += 2;
+
+        if (p.password_protected) {
+            const rows = [['Status', 'Password Protected']];
+            if (p.policy_number) rows.unshift(['Policy Number', p.policy_number]);
+            doc.autoTable({
+                startY: y, margin: { left: margin, right: margin }, body: rows, theme: 'plain',
+                styles: { fontSize: 9, cellPadding: 2, textColor: [60, 60, 60] },
+                columnStyles: { 0: { fontStyle: 'bold', cellWidth: 38, textColor: [100, 100, 100] } },
+            });
+            y = doc.lastAutoTable.finalY + 8;
+            return;
+        }
+
+        // Build key-value rows
+        const rows = [];
+        if (p.policy_number) rows.push(['Policy Number', p.policy_number]);
+        if (p.type) rows.push(['Type', p.type.replace('_', ' ').replace(/\b\w/g, c => c.toUpperCase())]);
+        if (p.policy_start || p.policy_end) {
+            let period = fmtDate(p.policy_start) + '  \u2192  ' + fmtDate(p.policy_end);
+            const days = daysUntil(p.policy_end);
+            if (days !== null && status === 'ACTIVE') period += `  (${days} days left)`;
+            rows.push(['Period', period]);
+        }
+        if (p.sum_insured) rows.push(['Sum Insured', fmtCurrency(p.sum_insured)]);
+        if (p.premium) {
+            let premStr = fmtCurrency(p.premium);
+            if (p.premium_frequency) premStr += ' / ' + p.premium_frequency;
+            rows.push(['Premium', premStr]);
+        }
+        if (p.insured_members && p.insured_members.length) {
+            const members = p.insured_members.map(m => {
+                let s = m.name || 'Unknown';
+                if (m.relationship) s += ` (${m.relationship})`;
+                if (m.date_of_birth) s += ` \u2014 DOB: ${fmtDate(m.date_of_birth)}`;
+                return s;
+            }).join('\n');
+            rows.push(['Insured', members]);
+        }
+        if (p.vehicle) {
+            const parts = [p.vehicle.make, p.vehicle.model, p.vehicle.registration].filter(Boolean);
+            if (parts.length) rows.push(['Vehicle', parts.join(' \u2014 ')]);
+        }
+        if (p.nominee) {
+            let nom = p.nominee.name || '';
+            if (p.nominee.relationship) nom += ` (${p.nominee.relationship})`;
+            if (nom) rows.push(['Nominee', nom]);
+        }
+        if (p.intermediary) rows.push(['Intermediary', p.intermediary]);
+        if (p.coverages && p.coverages.length) rows.push(['Coverages', p.coverages.join(', ')]);
+        if (p.notes) rows.push(['Notes', p.notes]);
+
+        doc.autoTable({
+            startY: y, margin: { left: margin, right: margin }, body: rows, theme: 'plain',
+            styles: { fontSize: 9, cellPadding: 2.5, textColor: [60, 60, 60], overflow: 'linebreak' },
+            columnStyles: {
+                0: { fontStyle: 'bold', cellWidth: 38, textColor: [100, 100, 100] },
+                1: { cellWidth: contentW - 38 },
+            },
+        });
+        y = doc.lastAutoTable.finalY + 8;
+    });
+
+    // Page numbers
+    const totalPages = doc.internal.getNumberOfPages();
+    for (let i = 1; i <= totalPages; i++) {
+        doc.setPage(i);
+        doc.setFontSize(8);
+        doc.setTextColor(160);
+        doc.text(`Page ${i} of ${totalPages}`, pageW / 2, pageH - 10, { align: 'center' });
+    }
+
+    doc.save('policies-life-export.pdf');
+}
+
+function showPremiumBreakdown() {
+    const visible = allPolicies.filter(p => !hiddenPolicies.has(p.policy_number));
+    const rows = visible
+        .map(p => ({ policy: p, ...annualizePremium(p) }))
+        .filter(r => r.policy.premium);
+
+    const total = rows.reduce((s, r) => s + r.annual, 0);
+
+    const rowsHtml = rows.map(r => {
+        const name = r.policy.plan_name || r.policy.provider || 'Unknown';
+        const isExpired = (r.policy.status || '').toUpperCase() === 'EXPIRED';
+        return `<tr class="${isExpired ? 'premium-row-expired' : ''}">
+            <td class="pb-name">${name}</td>
+            <td class="pb-calc">${r.explanation}</td>
+            <td class="pb-amount">${isExpired ? '—' : formatCurrency(Math.round(r.annual))}</td>
+        </tr>`;
+    }).join('');
+
+    const container = document.getElementById('modal-container');
+    container.innerHTML = `
+    <div class="modal-overlay" onclick="closeModal(event)">
+        <div class="modal premium-modal" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <h2>Annual Premium Breakdown</h2>
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+            </div>
+            <div class="modal-body" style="padding: 0;">
+                <table class="premium-table">
+                    <thead>
+                        <tr><th>Policy</th><th>Calculation</th><th>Per Year</th></tr>
+                    </thead>
+                    <tbody>${rowsHtml}</tbody>
+                    <tfoot>
+                        <tr><td colspan="2">Total Annual Premium</td><td class="pb-amount">${formatCurrency(Math.round(total))}</td></tr>
+                    </tfoot>
+                </table>
+            </div>
+        </div>
+    </div>`;
+    enableBottomSheetSwipe(container);
+}
+
 // ── Summary Bar ─────────────────────────────────
 function renderSummary(policies) {
     const bar = document.getElementById('summary-bar');
@@ -342,16 +713,7 @@ function renderSummary(policies) {
         const days = daysUntil(p.policy_end);
         return days !== null && days > 0 && days <= 90;
     }).length;
-    const totalPremium = policies.reduce((sum, p) => {
-        if (!p.premium || (p.status || '').toUpperCase() === 'EXPIRED') return sum;
-        if (p.premium_frequency === 'one_time' && p.policy_start && p.policy_end) {
-            const years = Math.max(1, Math.round((new Date(p.policy_end) - new Date(p.policy_start)) / (365.25 * 86400000)));
-            return sum + (p.premium / years);
-        }
-        if (p.premium_frequency === 'monthly') return sum + (p.premium * 12);
-        if (p.premium_frequency === 'quarterly') return sum + (p.premium * 4);
-        return sum + p.premium;
-    }, 0);
+    const totalPremium = policies.reduce((sum, p) => sum + annualizePremium(p).annual, 0);
 
     bar.classList.remove('hidden');
     bar.innerHTML = `
@@ -367,11 +729,21 @@ function renderSummary(policies) {
             <div class="summary-value">${expiringSoon}</div>
             <div class="summary-label">Expiring Soon</div>
         </div>
-        <div class="summary-item">
-            <div class="summary-value">${formatCurrency(totalPremium)}</div>
+        <div class="summary-item clickable" onclick="showPremiumBreakdown()">
+            <div class="summary-value">${formatCurrency(Math.round(totalPremium))}</div>
             <div class="summary-label">Annual Premium</div>
         </div>
     `;
+
+    // Export button inside filter bar (right-aligned)
+    const filterBar = document.getElementById('filter-bar');
+    if (filterBar && !filterBar.querySelector('.export-btn')) {
+        const btn = document.createElement('button');
+        btn.className = 'btn btn-ghost export-btn';
+        btn.onclick = exportPDF;
+        btn.innerHTML = `<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/></svg> Export PDF`;
+        filterBar.appendChild(btn);
+    }
 }
 
 // ── Render Policy Cards (Compact) ──────────────
@@ -485,7 +857,7 @@ function openModal(index) {
         <div class="unlock-form" id="unlock-form">
             <div class="unlock-hint">Hint: ${hint}</div>
             <div class="unlock-input-row">
-                <input type="text" id="unlock-password" class="unlock-input" placeholder="Enter PDF password" autocomplete="off" />
+                <input type="text" id="unlock-password" class="unlock-input" placeholder="Enter PDF password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
                 <button class="unlock-btn" onclick="unlockPdf(${index})">Unlock</button>
             </div>
             <div class="unlock-error hidden" id="unlock-error"></div>
@@ -522,6 +894,8 @@ function openModal(index) {
         </div>
     </div>`;
 
+    enableBottomSheetSwipe(container);
+
     // Focus the password input if present
     const pwInput = document.getElementById('unlock-password');
     if (pwInput) {
@@ -547,6 +921,9 @@ async function unlockPdf(index) {
     errEl.classList.add('hidden');
 
     try {
+        const vaultKey = await getVaultKey();
+        if (!vaultKey) { btn.disabled = false; btn.textContent = 'Unlock'; return; }
+
         const res = await fetch('/api/policies/unlock', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -554,7 +931,8 @@ async function unlockPdf(index) {
                 pdf_path: p.locked_pdf_path,
                 password: password,
                 email_subject: p.source_email || '',
-                vault_key: 'Ashish',
+                vault_key: vaultKey,
+                msg_id: p.source_msg_id || '',
             }),
         });
 
@@ -688,46 +1066,69 @@ function timeAgo(date) {
 // ── Keyboard ────────────────────────────────────
 document.addEventListener('keydown', e => {
     if (e.key === 'Escape') closeModal();
-    // Arrow keys for onboarding slider
-    const loginScreen = document.getElementById('login-screen');
-    if (loginScreen && !loginScreen.classList.contains('hidden')) {
-        if (e.key === 'ArrowRight') slideNav(1);
-        if (e.key === 'ArrowLeft') slideNav(-1);
+});
+
+// ── Mobile Menu ─────────────────────────────────
+function toggleMobileMenu() {
+    const menu = document.getElementById('mobile-menu');
+    if (menu) menu.classList.toggle('active');
+}
+
+function closeMobileMenu() {
+    const menu = document.getElementById('mobile-menu');
+    if (menu) menu.classList.remove('active');
+}
+
+document.addEventListener('click', (e) => {
+    const menu = document.getElementById('mobile-menu');
+    const btn = document.getElementById('mobile-menu-btn');
+    if (menu && btn && !menu.contains(e.target) && !btn.contains(e.target)) {
+        closeMobileMenu();
     }
 });
 
-// ── Onboarding Slider ──────────────────────────
-let currentSlide = 0;
-const totalSlides = 4;
+document.addEventListener('DOMContentLoaded', () => {
+    const btn = document.getElementById('mobile-menu-btn');
+    if (btn) btn.addEventListener('click', toggleMobileMenu);
+});
 
-function goToSlide(n) {
-    currentSlide = n;
-    document.querySelectorAll('.slide').forEach(el => el.classList.remove('active'));
-    document.querySelectorAll('.dot').forEach(el => el.classList.remove('active'));
+// ── Bottom Sheet Swipe ──────────────────────────
+function enableBottomSheetSwipe(container) {
+    const overlay = container.querySelector('.modal-overlay');
+    const modal = overlay ? overlay.querySelector('.modal') : null;
+    if (!modal || window.innerWidth > 428) return;
 
-    const slide = document.querySelector(`.slide[data-slide="${n}"]`);
-    const dot = document.querySelectorAll('.dot')[n];
-    if (slide) slide.classList.add('active');
-    if (dot) dot.classList.add('active');
+    const header = modal.querySelector('.modal-header');
+    if (!header) return;
 
-    const prev = document.getElementById('slide-prev');
-    const next = document.getElementById('slide-next');
-    if (prev) prev.disabled = n === 0;
-    if (next) {
-        if (n === totalSlides - 1) {
-            next.style.opacity = '0';
-            next.style.pointerEvents = 'none';
+    let startY = 0, currentY = 0, isDragging = false;
+
+    header.addEventListener('touchstart', (e) => {
+        startY = e.touches[0].clientY;
+        currentY = startY;
+        isDragging = true;
+        modal.style.transition = 'none';
+    }, { passive: true });
+
+    header.addEventListener('touchmove', (e) => {
+        if (!isDragging) return;
+        currentY = e.touches[0].clientY;
+        const diff = currentY - startY;
+        if (diff > 0) modal.style.transform = `translateY(${diff}px)`;
+    }, { passive: true });
+
+    header.addEventListener('touchend', () => {
+        if (!isDragging) return;
+        isDragging = false;
+        modal.style.transition = 'transform 0.2s ease';
+        const diff = currentY - startY;
+        if (diff > 100) {
+            modal.style.transform = 'translateY(100%)';
+            setTimeout(() => closeModal(), 200);
         } else {
-            next.style.opacity = '';
-            next.style.pointerEvents = '';
-            next.disabled = false;
+            modal.style.transform = 'translateY(0)';
         }
-    }
-}
-
-function slideNav(dir) {
-    const next = currentSlide + dir;
-    if (next >= 0 && next < totalSlides) goToSlide(next);
+    });
 }
 
 // ── Go ──────────────────────────────────────────

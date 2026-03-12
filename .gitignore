@@ -11,3 +11,7 @@ htmlcov/
 .coverage
 coverage.xml
 .pytest_cache/
+*.backup.*
+.fly-secrets-backup*
+demo_*.py
+devflow/

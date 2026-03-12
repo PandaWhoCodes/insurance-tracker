@@ -315,6 +315,33 @@ class TestFinalize:
         result = await pipeline.finalize([_make_policy(policy_number="A1", policy_end="2027-01-01")])
         assert len(result) == 1
 
+    @freeze_time("2026-03-03")
+    async def test_locked_policy_no_policy_number_survives(self):
+        """Locked PDFs with no policy number should still appear in results."""
+        pipeline = _make_pipeline_service()
+        locked = _make_policy(
+            policy_number=None,
+            policy_end=None,
+            policy_start=None,
+            status=None,
+            password_protected=True,
+            locked_pdf_path="/tmp/test.pdf",
+            password_hint="Your DOB in DDMMYYYY",
+            provider="Some Insurance Co",
+        )
+        result = await pipeline.finalize([locked], existing_policies=[])
+        assert len(result) == 1
+        assert result[0]["password_protected"] is True
+
+    @freeze_time("2026-03-03")
+    async def test_finalize_with_none_existing_policies(self):
+        """Passing None as existing_policies should not crash (prev_final or [] fix)."""
+        pipeline = _make_pipeline_service()
+        new = [_make_policy(policy_number="X1", policy_end="2027-01-01")]
+        # This would have raised TypeError before the fix
+        result = await pipeline.finalize(new, existing_policies=None)
+        assert len(result) == 1
+
 
 # ── LIC_PLAN_NAMES ───────────────────────────────────
 

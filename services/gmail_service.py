@@ -401,6 +401,16 @@ class GmailService:
         logger.info(f"[Timing] _download_attachments TOTAL: {time.time() - t_total:.2f}s — {len(downloaded)} files saved")
         return downloaded
 
+    def redownload_attachment(self, msg_id: str) -> list[str]:
+        """Re-download PDF attachments for a specific message. Returns list of file paths."""
+        try:
+            detail = self._get_message_detail(msg_id)
+            parts = detail["payload"].get("parts", [detail["payload"]])
+            return self._download_attachments(msg_id, parts, detail["subject"])
+        except Exception as e:
+            logger.warning(f"Failed to re-download attachment for msg_id={msg_id}: {e}")
+            return []
+
     def _extract_text_from_pdf(self, filepath: str) -> tuple[str, bool]:
         """Extract text from PDF using PyMuPDF. Returns (text, is_password_protected)."""
         text = ""

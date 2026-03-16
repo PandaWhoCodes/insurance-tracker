@@ -24,6 +24,8 @@ let currentFilter = 'all';
 let hiddenPolicies = new Set();
 let currentUserEmail = null;
 let hasGmailScope = false;
+let currentRefreshEs = null;
+let wakeLockSentinel = null;
 
 // ── Vault Key ──────────────────────────────────
 function getVaultKey() {
@@ -296,9 +298,12 @@ async function refreshPolicies(forceRefresh = false) {
     showProgress('Scanning your inbox...');
     setActiveStage('gmail');
 
+    await requestWakeLock();
+
     let url = '/api/policies/refresh-stream?vault_key=' + encodeURIComponent(vaultKey);
     if (forceRefresh) url += '&force=true';
     const es = new EventSource(url);
+    currentRefreshEs = es;
 
     es.addEventListener('progress', (e) => {
         const d = JSON.parse(e.data);
@@ -317,35 +322,17 @@ async function refreshPolicies(forceRefresh = false) {
         es.close();
         completeStage('finalize');
         updateProgress(100, 'All done!');
-
-        setTimeout(() => {
-            hideProgress();
-            const complete = (d.policies || []).filter(p => p.policy_number || p.policy_end);
-            if (complete.length > 0) {
-                allPolicies = complete;
-                const visible = allPolicies.filter(p => !hiddenPolicies.has(p.policy_number));
-                renderSummary(visible);
-                renderFiltered();
-                updateCacheInfo(d.fetched_at, false);
-                document.getElementById('empty-state').classList.add('hidden');
-                document.getElementById('filter-bar').classList.remove('hidden');
-            } else {
-                document.getElementById('empty-state').classList.remove('hidden');
-                document.getElementById('policies-container').innerHTML = '';
-                document.getElementById('summary-bar').classList.add('hidden');
-                document.getElementById('filter-bar').classList.add('hidden');
-            }
-            isRefreshing = false;
-            refreshBtn.disabled = false;
-        }, 400);
+        setTimeout(() => applyRefreshResults(d, refreshBtn), 400);
     });
 
     es.addEventListener('error_event', (e) => {
         const d = JSON.parse(e.data);
         es.close();
         hideProgress();
+        releaseWakeLock();
         showToast('Refresh failed: ' + d.message);
         isRefreshing = false;
+        currentRefreshEs = null;
         refreshBtn.disabled = false;
         if (d.message && (d.message.includes('re-authenticate') || d.message.includes('No credentials'))) {
             refreshBtn.textContent = 'Re-login';
@@ -355,10 +342,8 @@ async function refreshPolicies(forceRefresh = false) {
 
     es.onerror = () => {
         es.close();
-        hideProgress();
-        showToast('Connection lost during refresh.');
-        isRefreshing = false;
-        refreshBtn.disabled = false;
+        currentRefreshEs = null;
+        pollForResults(vaultKey, refreshBtn);
     };
 }
 
@@ -465,6 +450,67 @@ function completeStage(stage) {
             el.classList.add('complete');
         }
     });
+}
+
+// ── Refresh Results Helper ──────────────────────
+function applyRefreshResults(data, refreshBtn) {
+    hideProgress();
+    releaseWakeLock();
+    const complete = (data.policies || []).filter(p => p.policy_number || p.policy_end || p.password_protected);
+    if (complete.length > 0) {
+        allPolicies = complete;
+        const visible = allPolicies.filter(p => !hiddenPolicies.has(p.policy_number));
+        renderSummary(visible);
+        renderFiltered();
+        updateCacheInfo(data.fetched_at, false);
+        document.getElementById('empty-state').classList.add('hidden');
+        document.getElementById('filter-bar').classList.remove('hidden');
+    } else {
+        document.getElementById('empty-state').classList.remove('hidden');
+        document.getElementById('policies-container').innerHTML = '';
+        document.getElementById('summary-bar').classList.add('hidden');
+        document.getElementById('filter-bar').classList.add('hidden');
+    }
+    isRefreshing = false;
+    currentRefreshEs = null;
+    refreshBtn.disabled = false;
+}
+
+// ── Poll for results (mobile SSE recovery) ──────
+async function pollForResults(vaultKey, refreshBtn) {
+    updateProgress(null, 'Reconnecting...');
+    for (let i = 0; i < 10; i++) {
+        await new Promise(r => setTimeout(r, 3000));
+        try {
+            const data = await API.policies(vaultKey);
+            if (data && data.policies && data.policies.length > 0) {
+                applyRefreshResults(data, refreshBtn);
+                return;
+            }
+        } catch {}
+    }
+    hideProgress();
+    releaseWakeLock();
+    showToast('Your data may still be processing — try reloading in a minute.');
+    isRefreshing = false;
+    currentRefreshEs = null;
+    refreshBtn.disabled = false;
+}
+
+// ── Wake Lock (prevent screen off during refresh) ──
+async function requestWakeLock() {
+    try {
+        if (navigator.wakeLock) {
+            wakeLockSentinel = await navigator.wakeLock.request('screen');
+        }
+    } catch {}
+}
+
+function releaseWakeLock() {
+    if (wakeLockSentinel) {
+        wakeLockSentinel.release().catch(() => {});
+        wakeLockSentinel = null;
+    }
 }
 
 // ── Premium Calculation ─────────────────────────
@@ -1130,6 +1176,18 @@ function enableBottomSheetSwipe(container) {
         }
     });
 }
+
+// ── Visibility Recovery (mobile screen wake) ────
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && isRefreshing && currentRefreshEs && currentRefreshEs.readyState === EventSource.CLOSED) {
+        const vaultKey = sessionStorage.getItem('vault_key');
+        const refreshBtn = document.getElementById('refresh-btn');
+        if (vaultKey && refreshBtn) {
+            currentRefreshEs = null;
+            pollForResults(vaultKey, refreshBtn);
+        }
+    }
+});
 
 // ── Go ──────────────────────────────────────────
 init();

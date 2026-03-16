@@ -193,8 +193,8 @@ class GmailService:
                 for mid in batch_chunk:
                     batch.add(
                         self.service.users().messages().get(
-                            userId="me", id=mid, format="metadata",
-                            metadataHeaders=["Subject", "From", "Date"],
+                            userId="me", id=mid, format="full",
+                            fields="id,sizeEstimate,snippet,payload(headers,mimeType,parts(filename,mimeType,body(size),parts(filename,mimeType,body(size))))",
                         ),
                         callback=make_callback(mid),
                     )
@@ -203,11 +203,8 @@ class GmailService:
 
                 for mid, msg in batch_results.items():
                     headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
-                    # Check for attachments in payload parts
-                    parts = msg.get("payload", {}).get("parts", [])
-                    has_att = any(
-                        p.get("filename") for p in parts
-                    ) if parts else False
+                    # Check for PDF attachments in payload parts (including nested)
+                    has_att = self._check_has_pdf_attachment(msg.get("payload", {}))
                     results[mid] = {
                         "msg_id": mid,
                         "subject": headers.get("Subject", "(no subject)"),
@@ -215,6 +212,7 @@ class GmailService:
                         "date": headers.get("Date", ""),
                         "snippet": msg.get("snippet", ""),
                         "has_attachments": has_att,
+                        "sizeEstimate": msg.get("sizeEstimate", 0),
                     }
 
                 failed.extend(batch_failed)
@@ -532,6 +530,21 @@ class GmailService:
                     return result
             return None
         return walk(payload) or ""
+
+    @staticmethod
+    def _check_has_pdf_attachment(payload: dict) -> bool:
+        """Check if payload contains any PDF attachment (walks nested parts)."""
+        def walk(parts):
+            for p in parts:
+                fn = (p.get("filename") or "").lower()
+                mime = (p.get("mimeType") or "").lower()
+                if fn and (fn.endswith(".pdf") or "pdf" in mime):
+                    return True
+                if p.get("parts"):
+                    if walk(p["parts"]):
+                        return True
+            return False
+        return walk(payload.get("parts", []))
 
     def _extract_body_text(self, payload: dict) -> str:
         text = ""

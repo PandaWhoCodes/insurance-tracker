@@ -1,6 +1,6 @@
 """Triage service: classify emails as insurance-related.
 
-Primary: Groq LLM (Llama 4 Scout) — fast, accurate, batched.
+Primary: Groq LLM (Llama 3.1 8B) — fast, cheap, accurate, batched.
 Fallback: keyword-based scoring if Groq unavailable.
 """
 
@@ -14,34 +14,32 @@ from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 
-TRIAGE_PROMPT = """You are classifying emails to find insurance policy documents.
+TRIAGE_PROMPT = """You are classifying emails that have PDF attachments to find insurance policy documents.
+All these emails have attachments. Decide if the attachment is likely an insurance policy PDF.
 
-Mark as YES:
-- Actual policy documents, policy copies, policy certificates
-- Policy issuance/renewal confirmations with attachments
+Mark as YES — the PDF attachment is likely an insurance policy document:
+- Policy documents, policy copies, policy certificates, policy schedules
+- Renewed policy documents ("Your Renewed Policy Document")
+- Updated policy documents ("Updated Insurance Policy")
 - Premium receipts or premium paid certificates
-- Bonus letters, renewal notices, premium deposit receipts from insurers
 - Certificate of insurance documents
-- "Thank you for choosing [insurer]" emails (these ARE policy documents)
-- "Congratulations, you are now secured with [insurer]" emails
-- Emails with policy numbers that contain actual policy PDFs
-- CIS (Customer Information Sheet) verification emails from insurers
-- Forwarded (Fwd:) versions of any of the above — treat "Fwd:" the same as the original
-- "Communication for Policy no ..." emails from insurers (these contain policy documents)
+- "Email Policy Copy" or "Your policy document is here" emails
+- "Thank you for choosing [insurer]" or "Congratulations" emails with policy PDFs
+- "Communication for Policy no ..." emails from insurers
+- Forwarded (Fwd:) versions of any of the above
+- Non-registration letters or underwriting letters referencing a policy number
 
-Mark as NO:
-- Marketing emails, renewal reminders without attachments, promotions
-- Newsletters, trading tips, mutual fund updates
-- Claim process guides, "how to claim" emails
-- OTP/login verification emails
-- General customer support emails
-- Bank statements, credit card emails, loan offers
-- Non-insurance emails (travel bookings, shopping, etc.)
+Mark as NO — the PDF attachment is NOT an insurance policy:
+- Newsletters, market reports, mutual fund updates with PDF reports
+- Bank statements, credit card statements, loan documents
+- Tax certificates, TDS certificates (Form 16A), interest certificates
+- Dividend notices (IndianOil, etc.)
+- Travel booking confirmations (MakeMyTrip, AirAsia, etc.)
+- Non-insurance PDFs (invoices, receipts from non-insurers, etc.)
 
-Respond with ONLY numbered YES/NO like this:
+Respond with ONLY numbered YES/NO:
 1. YES
 2. NO
-3. YES
 ...
 
 One line per email, matching the numbering."""
@@ -64,8 +62,8 @@ class TriageService:
                 api_key=api_key,
                 base_url="https://api.groq.com/openai/v1",
             )
-            self._model = "meta-llama/llama-4-scout-17b-16e-instruct"
-            logger.info("Triage: using Groq (Llama 4 Scout)")
+            self._model = "llama-3.1-8b-instant"
+            logger.info("Triage: using Groq (Llama 3.1 8B)")
         else:
             logger.warning("Triage: GROQ_API_KEY not set, using keyword fallback")
 
@@ -79,17 +77,40 @@ class TriageService:
     async def classify_batch_async(
         self, email_metadata: list[dict]
     ) -> list[tuple[bool, str, float]]:
-        """Classify emails using Groq LLM in batches. Falls back to keyword."""
+        """Classify emails using Groq LLM in batches. Falls back to keyword.
+        Pre-filters: emails without PDF attachments are auto-rejected.
+        """
         if not email_metadata:
             return []
 
-        if not self._client:
-            return [self._keyword_classify(m) for m in email_metadata]
-
+        # Pre-filter: only send emails WITH attachments to LLM
         results = [None] * len(email_metadata)
+        llm_indices = []  # indices of emails that need LLM classification
+        skipped = 0
+
+        for i, meta in enumerate(email_metadata):
+            if not meta.get("has_attachments"):
+                results[i] = (False, "no_attachment", 0.0)
+                skipped += 1
+            else:
+                llm_indices.append(i)
+
+        logger.info(f"Triage pre-filter: {skipped} skipped (no attachment), {len(llm_indices)} sent to LLM")
+
+        if not llm_indices:
+            return results
+
+        # Build list of emails that need LLM classification
+        llm_emails = [email_metadata[i] for i in llm_indices]
+
+        if not self._client:
+            for idx, meta in zip(llm_indices, llm_emails):
+                results[idx] = self._keyword_classify(meta)
+            return results
+
         batches = []
-        for i in range(0, len(email_metadata), BATCH_SIZE):
-            batches.append((i, email_metadata[i:i + BATCH_SIZE]))
+        for i in range(0, len(llm_emails), BATCH_SIZE):
+            batches.append((i, llm_emails[i:i + BATCH_SIZE]))
 
         t0 = time.time()
         tasks = [self._classify_one_batch(start, batch) for start, batch in batches]
@@ -99,13 +120,15 @@ class TriageService:
             if isinstance(batch_res, Exception):
                 logger.warning(f"Groq triage batch failed: {batch_res}, using keyword fallback")
                 for j, meta in enumerate(batch):
-                    results[start + j] = self._keyword_classify(meta)
+                    orig_idx = llm_indices[start + j]
+                    results[orig_idx] = self._keyword_classify(meta)
             else:
                 for j, res in enumerate(batch_res):
-                    results[start + j] = res
+                    orig_idx = llm_indices[start + j]
+                    results[orig_idx] = res
 
         elapsed = time.time() - t0
-        logger.info(f"Triage: classified {len(email_metadata)} emails via Groq in {elapsed:.2f}s ({len(batches)} batches)")
+        logger.info(f"Triage: classified {len(llm_emails)} emails via Groq in {elapsed:.2f}s ({len(batches)} batches), {skipped} pre-filtered")
         return results
 
     async def _classify_one_batch(

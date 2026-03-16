@@ -232,7 +232,7 @@ def _do_fetch_and_extract(token_json: str, msg_id: str, user_email: str) -> list
                     continue
 
                 text = ""
-                for page in doc:
+                for page in doc[:10]:  # first 10 pages — all policy info is there
                     page_text = page.get_text()
                     if page_text:
                         text += page_text + "\n"

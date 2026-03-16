@@ -110,16 +110,49 @@ class GmailService:
         Uses batch API to fetch metadata in chunks of 25 with retry + backoff.
         Returns list of {msg_id, subject, from, date, snippet}. No PDF download.
         """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         t_total = time.time()
         all_msg_ids = set()
         queries = get_search_queries()
 
+        # Run search queries in parallel — each thread gets its own Gmail service
+        # (httplib2 is not thread-safe, so we build a fresh service per thread)
         t_search = time.time()
-        for query in queries:
+        token_path = str(self.token_path)
+
+        def run_query(query):
+            # Build a dedicated Gmail service for this thread
+            creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+            if not creds or not creds.valid:
+                if creds and creds.expired and creds.refresh_token:
+                    creds.refresh(Request())
+            svc = build("gmail", "v1", credentials=creds)
             t0 = time.time()
-            messages = self._search_emails(query, max_results=100)
-            logger.info(f"[Timing] Search query: {time.time() - t0:.2f}s — '{query[:50]}' → {len(messages)} results")
-            all_msg_ids.update(m["id"] for m in messages)
+            messages = []
+            try:
+                result = svc.users().messages().list(
+                    userId="me", q=query, maxResults=100
+                ).execute()
+                messages = result.get("messages", [])
+                while "nextPageToken" in result and len(messages) < 100:
+                    result = svc.users().messages().list(
+                        userId="me", q=query,
+                        maxResults=100 - len(messages),
+                        pageToken=result["nextPageToken"],
+                    ).execute()
+                    messages.extend(result.get("messages", []))
+            except Exception as e:
+                logger.error(f"Error searching for '{query}': {e}")
+            elapsed = time.time() - t0
+            return query, messages, elapsed
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {executor.submit(run_query, q): q for q in queries}
+            for future in as_completed(futures):
+                query, messages, elapsed = future.result()
+                logger.info(f"[Timing] Search query: {elapsed:.2f}s — '{query[:50]}' → {len(messages)} results")
+                all_msg_ids.update(m["id"] for m in messages)
         logger.info(f"[Timing] All searches: {time.time() - t_search:.2f}s — {len(queries)} queries → {len(all_msg_ids)} unique emails")
 
         if not all_msg_ids:

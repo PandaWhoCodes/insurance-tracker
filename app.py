@@ -450,21 +450,49 @@ async def refresh_stream(request: Request, vault_key: str = "", force: bool = Fa
                 return
 
             # Stage 2: Extract (skip already-extracted emails)
+            # Use Modal workers if available, fall back to local
             raw_policies = []
-            async for event in pipeline.extract(
-                gmail,
-                relevant_emails,
-                skip_msg_ids=extracted_msg_ids,
-                user_id=user_id,
-                vault_key_derived=vault_key_derived,
-            ):
-                if event["type"] == "progress":
-                    yield sse_event("progress", event)
-                elif event["type"] == "stage_complete":
-                    raw_policies = event["raw_policies"]
-                    yield sse_event("stage_complete", {
-                        k: v for k, v in event.items() if k != "raw_policies"
-                    })
+            use_modal = False
+            try:
+                import modal
+                use_modal = True
+            except ImportError:
+                pass
+
+            if use_modal:
+                # Read token JSON for Modal
+                token_path = TOKENS_DIR / f"{email}.json"
+                token_json_str = token_path.read_text()
+                async for event in pipeline.extract_modal(
+                    token_json_str,
+                    email,
+                    relevant_emails,
+                    skip_msg_ids=extracted_msg_ids,
+                    user_id=user_id,
+                    vault_key_derived=vault_key_derived,
+                ):
+                    if event["type"] == "progress":
+                        yield sse_event("progress", event)
+                    elif event["type"] == "stage_complete":
+                        raw_policies = event["raw_policies"]
+                        yield sse_event("stage_complete", {
+                            k: v for k, v in event.items() if k != "raw_policies"
+                        })
+            else:
+                async for event in pipeline.extract(
+                    gmail,
+                    relevant_emails,
+                    skip_msg_ids=extracted_msg_ids,
+                    user_id=user_id,
+                    vault_key_derived=vault_key_derived,
+                ):
+                    if event["type"] == "progress":
+                        yield sse_event("progress", event)
+                    elif event["type"] == "stage_complete":
+                        raw_policies = event["raw_policies"]
+                        yield sse_event("stage_complete", {
+                            k: v for k, v in event.items() if k != "raw_policies"
+                        })
 
             # Stage 3: Finalize — merge cached extractions with new
             yield sse_event("progress", {

@@ -541,16 +541,22 @@ class PipelineService:
         )
 
         # Save extractions to DB (locally, after Modal returns)
+        # Group by msg_id since one email can produce multiple policies
         if raw_policies and user_id is not None and vault_key_derived is not None:
+            from collections import defaultdict
+            by_msg = defaultdict(list)
             for policy in raw_policies:
                 msg_id = policy.get("source_msg_id", "")
                 if msg_id:
-                    try:
-                        await db_service.save_extraction_result(
-                            msg_id, user_id, policy, vault_key_derived
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to save extraction for {msg_id}: {e}")
+                    by_msg[msg_id].append(policy)
+            for msg_id, policies in by_msg.items():
+                try:
+                    data = policies[0] if len(policies) == 1 else policies
+                    await db_service.save_extraction_result(
+                        msg_id, user_id, data, vault_key_derived
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to save extraction for {msg_id}: {e}")
 
         if not raw_policies and cached_count == 0:
             yield {

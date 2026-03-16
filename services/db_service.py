@@ -203,9 +203,11 @@ async def save_triage_result(msg_id: str, user_id: int, is_relevant: bool, reaso
 
 
 async def save_extraction_result(
-    msg_id: str, user_id: int, extraction_json: dict, key: bytes
+    msg_id: str, user_id: int, extraction_json: dict | list, key: bytes
 ):
-    """Encrypt and save extraction JSON for a processed email."""
+    """Encrypt and save extraction JSON for a processed email.
+    Accepts a single dict or a list of dicts (multiple policies from one email).
+    """
     encrypted = encrypt(json.dumps(extraction_json), key)
     now = datetime.now().isoformat()
     await db.execute(

@@ -142,7 +142,12 @@
   - **UX:** Show "Reconnecting..." during poll, then render results or show "Try reloading in a minute"
 
 
-## 9. Other Ideas (Lower Priority)
+## 9. Performance / Cost Optimizations
+
+- [ ] **Limit PDF page extraction to 10 pages max:** Insurance policy docs can be 50+ pages but all key info (policy number, dates, sum insured, members) is in the first few pages. Cap PyMuPDF extraction at 10 pages in `modal_app.py` `_do_fetch_and_extract()` to reduce LLM input tokens and speed up extraction.
+
+
+## 10. Other Ideas (Lower Priority)
 
 - **Policy comparison:** Side-by-side comparison of health plans (coverage, premium, sum insured)
 - **Renewal tracking:** Track premium payment history across years

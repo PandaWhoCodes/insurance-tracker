@@ -1,7 +1,7 @@
 """Modal workers for insurance pipeline — parallel PDF download/extract + LLM extraction."""
-
 import json
 import logging
+import re
 import time
 
 import modal
@@ -99,8 +99,7 @@ PASSWORD_HINTS = {
 def _strip_json(content: str) -> str:
     if content.startswith("```"):
         content = content.split("```")[1]
-        if content.startswith("json"):
-            content = content[4:]
+        content = content.removeprefix("json")
         content = content.strip()
     if content.endswith("```"):
         content = content[:-3].strip()
@@ -187,9 +186,7 @@ def _do_fetch_and_extract(token_json: str, msg_id: str, user_email: str) -> list
             if not filename:
                 continue
             if not (
-                mime_type.startswith("application/pdf")
-                or mime_type.startswith("application/octet-stream")
-                or filename.lower().endswith(".pdf")
+                mime_type.startswith(("application/pdf", "application/octet-stream")) or filename.lower().endswith(".pdf")
             ):
                 continue
 
@@ -569,6 +566,7 @@ def main():
     """Quick test: process a single email."""
     import os
     from pathlib import Path
+
     from dotenv import load_dotenv
 
     load_dotenv()
@@ -605,8 +603,8 @@ def main():
 
     # Use the orchestrator to process a few emails
     # First, get some msg_ids via a quick Gmail search
-    from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
 
     creds = Credentials.from_authorized_user_info(

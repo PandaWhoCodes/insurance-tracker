@@ -276,19 +276,19 @@
 
         <h1 class="hiw-title">How It Works</h1>
         <p class="hiw-subtitle">
-            Policies.life scans your Gmail for policy documents, extracts the details using AI, and shows them in one dashboard. Your data never leaves your control.
+            Policies.life processes your uploaded policy PDFs, extracts the details using AI, and shows them in one dashboard. Your data never leaves your control.
         </p>
 
         <!-- Pipeline Visualization -->
         <div class="section-header">The Pipeline</div>
         <div class="pipeline">
             <div class="pipeline-step">
-                <div class="step-icon gmail">
-                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
+                <div class="step-icon triage">
+                    <svg viewBox="0 0 16 16" fill="currentColor" width="22" height="22"><path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path d="M7.646 1.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 2.707V11.5a.5.5 0 0 1-1 0V2.707L5.354 4.854a.5.5 0 1 1-.708-.708l3-3z"/></svg>
                 </div>
                 <div class="step-num">Step 1</div>
-                <div class="step-label">Gmail Scan</div>
-                <div class="step-desc">Searches your inbox for insurance-related emails</div>
+                <div class="step-label">Upload</div>
+                <div class="step-desc">Securely upload your policy PDFs directly from your device</div>
             </div>
             <div class="pipeline-arrow">&rarr;</div>
             <div class="pipeline-step">
@@ -296,8 +296,8 @@
                     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
                 </div>
                 <div class="step-num">Step 2</div>
-                <div class="step-label">AI Triage</div>
-                <div class="step-desc">AI filters out newsletters and marketing, keeps real policies</div>
+                <div class="step-label">Verify</div>
+                <div class="step-desc">We check passwords locally and ensure it's a valid policy</div>
             </div>
             <div class="pipeline-arrow">&rarr;</div>
             <div class="pipeline-step">
@@ -319,41 +319,17 @@
             </div>
         </div>
 
-        <!-- Search Terms -->
-        <div class="section-header">What We Search For</div>
-        <div class="search-terms">
-            <p>We run these Gmail searches to find insurance-related emails from the last 2 years:</p>
-            <div class="term-chips" id="term-chips">
-                <span class="term-chip visible">health insurance</span>
-                <span class="term-chip visible">car insurance</span>
-                <span class="term-chip visible">term life</span>
-                <span class="term-chip extra">mediclaim</span>
-                <span class="term-chip extra">motor insurance</span>
-                <span class="term-chip extra">vehicle insurance</span>
-                <span class="term-chip extra">term insurance</span>
-                <span class="term-chip extra">term plan</span>
-                <span class="term-chip extra">subject:"policy copy" from:policybazaar</span>
-                <span class="term-chip extra">subject:"term life" has:attachment</span>
-                <span class="terms-toggle" id="terms-toggle" onclick="toggleTerms()">+7 more</span>
-            </div>
-        </div>
-        <script>
-        function toggleTerms() {
-            document.querySelectorAll('.term-chip.extra').forEach(el => el.style.display = 'inline-block');
-            document.getElementById('terms-toggle').style.display = 'none';
-        }
-        </script>
+
 
         <!-- Data Flow -->
         <div class="section-header">Where Your Data Goes</div>
         <div class="flow-diagram">
-            <span class="dim">your gmail</span> <span class="highlight">&rarr;</span> <span class="dim">read-only scan (nothing modified)</span><br>
-            <span class="dim">email metadata</span> <span class="highlight">&rarr;</span> <span class="dim">AI triage (is this a policy?)</span> <span class="highlight">&rarr;</span> <span class="dim">yes/no saved as plaintext</span><br>
+            <span class="dim">your device</span> <span class="highlight">&rarr;</span> <span class="dim">local password check</span> <span class="highlight">&rarr;</span> <span class="dim">upload to server</span><br>
             <span class="dim">policy PDFs</span> <span class="highlight">&rarr;</span> <span class="dim">AI extraction</span> <span class="highlight">&rarr;</span> <span class="encrypted">encrypted with your vault key</span> <span class="highlight">&rarr;</span> <span class="dim">database</span><br>
             <span class="dim">final policies</span> <span class="highlight">&rarr;</span> <span class="encrypted">encrypted</span> <span class="highlight">&rarr;</span> <span class="dim">database</span><br>
             <br>
-            <span class="dim">vault key:</span> <span class="highlight">never stored</span> <span class="dim">// exists only in memory during refresh</span><br>
-            <span class="dim">PDFs:</span> <span class="highlight">never uploaded</span> <span class="dim">// processed locally, text sent to AI</span><br>
+            <span class="dim">vault key:</span> <span class="highlight">never stored</span> <span class="dim">// exists only in memory</span><br>
+            <span class="dim">PDFs:</span> <span class="highlight">deleted instantly</span> <span class="dim">// processed locally, text sent to AI, then file is removed</span><br>
             <span class="dim">database without key:</span> <span class="encrypted">unreadable encrypted blobs</span>
         </div>
 
@@ -361,8 +337,8 @@
         <div class="section-header">Privacy & Security</div>
         <div class="trust-grid">
             <div class="trust-card">
-                <h3><span class="trust-dot"></span>Read-Only Gmail Access</h3>
-                <p>We only request read permission for your Gmail. No emails are modified, deleted, or sent. You can revoke access anytime from your Google account settings.</p>
+                <h3><span class="trust-dot"></span>Secure Uploads</h3>
+                <p>We process your uploaded PDFs securely. Passwords for encrypted PDFs are checked locally in your browser first before being securely transmitted for extraction.</p>
             </div>
             <div class="trust-card">
                 <h3><span class="trust-dot"></span>Vault Key Encryption</h3>
@@ -382,24 +358,16 @@
         <div class="section-header">Common Questions</div>
         <div>
             <div class="faq-item">
-                <div class="faq-q">What can the app see in my Gmail?</div>
-                <div class="faq-a">Only email metadata (subject, sender, date) and attachments from insurance-related search results. It cannot read your drafts, send emails, or access unrelated messages.</div>
-            </div>
-            <div class="faq-item">
                 <div class="faq-q">What does the AI see?</div>
-                <div class="faq-a">The AI (Grok) receives email subject lines for triage, and truncated PDF text for extraction. It does not receive your email address, password, or full inbox.</div>
+                <div class="faq-a">The AI (Grok) receives the extracted text from your PDF to pull out policy details. It does not store or train on your personal documents.</div>
             </div>
             <div class="faq-item">
-                <div class="faq-q">Why does the first refresh take so long?</div>
-                <div class="faq-a">The first run processes all your insurance emails from scratch — downloading PDFs and running AI extraction on each. Subsequent refreshes are near-instant because results are cached (encrypted) in the database.</div>
+                <div class="faq-q">What happens to my PDF after upload?</div>
+                <div class="faq-a">Your PDF is processed immediately to extract the text and then deleted from our servers. We only store the encrypted extracted data in our database.</div>
             </div>
             <div class="faq-item">
                 <div class="faq-q">What happens if I use a wrong vault key?</div>
                 <div class="faq-a">The app will detect the mismatch and show an error. It won't corrupt your data — the encrypted cache remains intact for when you use the correct key.</div>
-            </div>
-            <div class="faq-item">
-                <div class="faq-q">Can I revoke access?</div>
-                <div class="faq-a">Yes. Visit your <a href="https://myaccount.google.com/permissions" target="_blank" style="color: var(--accent);">Google Account permissions</a> and remove Policies.life. Your cached data in the database will remain encrypted and unreadable without your vault key.</div>
             </div>
         </div>
     </div>
@@ -410,6 +378,8 @@
         <a href="/privacy" style="color:var(--text-secondary); text-decoration:none; margin:0 8px; transition:color 0.15s;">Privacy</a>
         <span style="color:var(--text-muted); margin:0 4px;">&middot;</span>
         <a href="/terms" style="color:var(--text-secondary); text-decoration:none; margin:0 8px; transition:color 0.15s;">Terms</a>
+        <span style="color:var(--text-muted); margin:0 4px;">&middot;</span>
+        <a href="https://github.com/PandaWhoCodes/insurance-tracker" target="_blank" style="color:var(--text-secondary); text-decoration:none; margin:0 8px; transition:color 0.15s;">Source Code</a>
     </footer>
 </body>
 </html>

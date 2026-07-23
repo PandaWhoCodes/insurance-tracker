@@ -37,9 +37,6 @@ BASIC_SCOPES = [
     "https://www.googleapis.com/auth/userinfo.email",
     "https://www.googleapis.com/auth/userinfo.profile",
 ]
-GMAIL_SCOPES = BASIC_SCOPES + [
-    "https://www.googleapis.com/auth/gmail.readonly",
-]
 
 app = FastAPI()
 app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET", "dev-fallback"))
@@ -84,18 +81,6 @@ def create_oauth_flow(scopes=None) -> Flow:
     return flow
 
 
-def _token_has_gmail_scope(token_path: Path) -> bool:
-    """Check if a stored token includes gmail.readonly scope."""
-    if not token_path.exists():
-        return False
-    try:
-        token_data = json.loads(token_path.read_text())
-        scopes = token_data.get("scopes", [])
-        return any("gmail.readonly" in s for s in scopes)
-    except Exception:
-        return False
-
-
 # ── Routes ──────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
@@ -136,27 +121,12 @@ async def login(request: Request):
     return RedirectResponse(authorization_url)
 
 
-@app.get("/auth/gmail")
-async def gmail_auth(request: Request):
-    """Second OAuth flow to add Gmail read scope."""
-    flow = create_oauth_flow(GMAIL_SCOPES)
-    authorization_url, state = flow.authorization_url(
-        access_type="offline",
-        include_granted_scopes="true",
-        prompt="consent",
-    )
-    request.session["oauth_state"] = state
-    request.session["code_verifier"] = flow.code_verifier
-    request.session["oauth_scopes"] = "gmail"
-    return RedirectResponse(authorization_url)
-
-
 @app.get("/auth/callback")
 async def callback(request: Request):
     import os as _os
     _os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
     # Recreate flow with the same scopes used for the request
-    requested_scopes = GMAIL_SCOPES if request.session.get("oauth_scopes") == "gmail" else BASIC_SCOPES
+    requested_scopes = BASIC_SCOPES
     flow = create_oauth_flow(requested_scopes)
     # Restore PKCE code_verifier from session
     flow.code_verifier = request.session.get("code_verifier")
@@ -205,18 +175,22 @@ async def get_me(request: Request):
     email = request.session.get("user_email")
     if not email:
         return JSONResponse({"authenticated": False}, status_code=401)
-    token_path = TOKENS_DIR / f"{email}.json"
-    has_gmail = _token_has_gmail_scope(token_path)
     return {
         "authenticated": True,
         "email": email,
         "name": request.session.get("user_name", email),
-        "has_gmail": has_gmail,
+        "has_gmail": False,
     }
 
 
-@app.get("/api/policies")
-async def get_policies(request: Request, vault_key: str = ""):
+from pydantic import BaseModel
+
+class PolicyRequest(BaseModel):
+    vault_key: str = ""
+
+@app.post("/api/policies")
+async def get_policies(request: Request, body: PolicyRequest):
+    vault_key = body.vault_key
     email = request.session.get("user_email")
     if not email:
         return JSONResponse({"error": "Not authenticated"}, status_code=401)
@@ -261,6 +235,7 @@ async def get_policies(request: Request, vault_key: str = ""):
 
 @app.post("/api/policies/refresh")
 async def refresh_policies(request: Request):
+    # Note: Retained for future use. Currently frontend uses direct PDF uploads.
     email = request.session.get("user_email")
     if not email:
         return JSONResponse({"error": "Not authenticated"}, status_code=401)
@@ -306,17 +281,10 @@ def sse_keepalive() -> str:
 
 @app.get("/api/policies/refresh-stream")
 async def refresh_stream(request: Request, vault_key: str = "", force: bool = False):
+    # Note: Retained for future use. Currently frontend uses direct PDF uploads.
     email = request.session.get("user_email")
     if not email:
         return JSONResponse({"error": "Not authenticated"}, status_code=401)
-
-    # Check Gmail scope before starting the stream
-    token_path = TOKENS_DIR / f"{email}.json"
-    if not _token_has_gmail_scope(token_path):
-        return JSONResponse(
-            {"error": "Gmail access not connected. Please connect Gmail first.", "need_gmail": True},
-            status_code=403,
-        )
 
     user_name = request.session.get("user_name", email)
 
@@ -662,6 +630,38 @@ async def unlock_pdf(request: Request):
         result.pop("locked_pdf_path", None)
         result.pop("password_hint", None)
 
+        # Sanitize dates
+        for d_field in ["policy_start", "policy_end"]:
+            d_val = result.get(d_field)
+            if d_val and isinstance(d_val, str):
+                d_val = d_val.strip()
+                result[d_field] = d_val  # update with stripped
+                from datetime import datetime as dt
+                try:
+                    dt.strptime(d_val, "%Y-%m-%d")
+                except (ValueError, TypeError):
+                    for fmt in ("%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%m-%d-%Y", "%d %b %Y", "%d %B %Y"):
+                        try:
+                            parsed = dt.strptime(d_val, fmt)
+                            result[d_field] = parsed.strftime("%Y-%m-%d")
+                            break
+                        except ValueError:
+                            pass
+
+        # Calculate end date if term is provided but end date is missing
+        if not result.get("policy_end") and result.get("policy_start") and result.get("policy_term"):
+            try:
+                from datetime import datetime as dt
+                s_date = dt.strptime(result["policy_start"], "%Y-%m-%d").date()
+                term_years = int(result["policy_term"])
+                try:
+                    e_date = s_date.replace(year=s_date.year + term_years)
+                except ValueError:
+                    e_date = s_date.replace(year=s_date.year + term_years, month=2, day=28)
+                result["policy_end"] = e_date.strftime("%Y-%m-%d")
+            except Exception:
+                pass
+
         # Fix status based on today's date
         end = result.get("policy_end")
         if end:
@@ -783,6 +783,37 @@ async def upload_pdf(
         if not result:
             return JSONResponse({"error": "Could not extract policy details from this PDF"}, status_code=422)
 
+        # Sanitize dates
+        for d_field in ["policy_start", "policy_end"]:
+            d_val = result.get(d_field)
+            if d_val and isinstance(d_val, str):
+                d_val = d_val.strip()
+                result[d_field] = d_val
+                try:
+                    datetime.strptime(d_val, "%Y-%m-%d")
+                except (ValueError, TypeError):
+                    for fmt in ("%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%m-%d-%Y", "%d %b %Y", "%d %B %Y"):
+                        try:
+                            parsed = datetime.strptime(d_val, fmt)
+                            result[d_field] = parsed.strftime("%Y-%m-%d")
+                            break
+                        except ValueError:
+                            pass
+
+        # Calculate end date if term is provided but end date is missing
+        if not result.get("policy_end") and result.get("policy_start") and result.get("policy_term"):
+            try:
+                from datetime import datetime as dt
+                s_date = dt.strptime(result["policy_start"], "%Y-%m-%d").date()
+                term_years = int(result["policy_term"])
+                try:
+                    e_date = s_date.replace(year=s_date.year + term_years)
+                except ValueError:
+                    e_date = s_date.replace(year=s_date.year + term_years, month=2, day=28)
+                result["policy_end"] = e_date.strftime("%Y-%m-%d")
+            except Exception:
+                pass
+
         # Fix status based on today's date
         end = result.get("policy_end")
         if end:
@@ -791,6 +822,9 @@ async def upload_pdf(
                 result["status"] = "ACTIVE" if end_date >= datetime.now().date() else "EXPIRED"
             except (ValueError, TypeError):
                 pass
+                
+        if password:
+            result["pdf_password"] = password
 
         # Dedup with existing policies
         cached = cache.get(email)

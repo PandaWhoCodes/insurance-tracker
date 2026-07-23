@@ -1,3 +1,6 @@
+// ── Config ──────────────────────────────────────
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+
 // ── Logout ──────────────────────────────────────
 function doLogout() {
     sessionStorage.removeItem('vault_key');
@@ -9,12 +12,12 @@ const API = {
     me: () => fetch('/api/me').then(r => r.json()),
     policies: (vaultKey) => {
         const vk = vaultKey || sessionStorage.getItem('vault_key') || '';
-        return fetch('/api/policies?vault_key=' + encodeURIComponent(vk)).then(r => r.ok ? r.json() : null);
-    },
-    refresh: () => fetch('/api/policies/refresh', { method: 'POST' }).then(r => {
-        if (!r.ok) return r.json().then(e => { throw new Error(e.error || 'Refresh failed'); });
-        return r.json();
-    }),
+        return fetch('/api/policies', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ vault_key: vk })
+        }).then(r => r.ok ? r.json() : null);
+    }
 };
 
 // ── State ───────────────────────────────────────
@@ -23,8 +26,6 @@ let allPolicies = [];
 let currentFilter = 'all';
 let hiddenPolicies = new Set();
 let currentUserEmail = null;
-let hasGmailScope = false;
-let currentRefreshEs = null;
 let wakeLockSentinel = null;
 
 // ── Vault Key ──────────────────────────────────
@@ -88,11 +89,9 @@ async function init() {
         const user = await API.me();
         if (user.authenticated) {
             currentUserEmail = user.email;
-            hasGmailScope = !!user.has_gmail;
             loadHiddenPolicies();
             updateLandingCtas(true);
             showMainScreen(user);
-            updateGmailButton();
             await loadPolicies();
         } else {
             showLoginScreen();
@@ -148,7 +147,7 @@ async function loadPolicies() {
             data = await API.policies(vk);
             if (data && data.wrong_key) {
                 sessionStorage.removeItem('vault_key');
-                showToast('Wrong vault key. Upload a PDF or refresh from Gmail to start fresh.');
+                showToast('Wrong vault key. Upload a PDF to start fresh.');
                 data = null;
             }
         } else {
@@ -260,91 +259,71 @@ function renderFiltered() {
     updateHiddenChip();
 }
 
-// ── Gmail Button ───────────────────────────────
-function updateGmailButton() {
-    const btn = document.getElementById('refresh-btn');
-    const mobileBtn = document.getElementById('mobile-refresh-btn');
-    if (hasGmailScope) {
-        const icon = '<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/><path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/></svg>';
-        btn.innerHTML = icon + ' Refresh from Gmail';
-        if (mobileBtn) mobileBtn.innerHTML = icon + ' <span>Refresh from Gmail</span>';
-    } else {
-        const icon = '<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M0 4a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V4zm2-1a1 1 0 0 0-1 1v.217l7 4.2 7-4.2V4a1 1 0 0 0-1-1H2zm13 2.383-4.708 2.825L15 11.105V5.383zm-.034 6.876-5.64-3.471L8 9.583l-1.326-.795-5.64 3.47A1 1 0 0 0 2 13h12a1 1 0 0 0 .966-.741zM1 11.105l4.708-2.897L1 5.383v5.722z"/></svg>';
-        btn.innerHTML = icon + ' Connect Gmail';
-        if (mobileBtn) mobileBtn.innerHTML = icon + ' <span>Connect Gmail</span>';
-    }
-}
 
-// ── Refresh (SSE) ──────────────────────────────
-async function refreshPolicies(forceRefresh = false) {
-    if (isRefreshing) return;
 
-    if (!hasGmailScope) {
-        window.location.href = '/auth/gmail';
-        return;
-    }
+async function promptPdfPassword(file) {
+    return new Promise((resolve) => {
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        overlay.innerHTML = `
+        <div class="modal vault-key-modal" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <h2>Protected PDF</h2>
+                <button class="modal-close" id="pdf-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p>This PDF is password-protected. Please enter the password to unlock it.</p>
+                <div id="pdf-error" style="color: #e03e3e; margin-bottom: 12px; display: none;"></div>
+                <input type="password" id="pdf-input" class="vk-input" placeholder="Password" />
+                <button class="btn btn-primary vk-submit" id="pdf-submit">Unlock</button>
+            </div>
+        </div>`;
 
-    const vaultKey = await getVaultKey();
-    if (!vaultKey) {
-        showToast('Vault key is required to continue. Click the button to try again.');
-        return;
-    }
+        document.getElementById('modal-container').appendChild(overlay);
 
-    isRefreshing = true;
-    const _refreshStart = Date.now();
+        const input = document.getElementById('pdf-input');
+        const submit = document.getElementById('pdf-submit');
+        const close = document.getElementById('pdf-close');
+        const errorDiv = document.getElementById('pdf-error');
 
-    const refreshBtn = document.getElementById('refresh-btn');
-    refreshBtn.disabled = true;
-    showProgress('Scanning your inbox...');
-    setActiveStage('gmail');
+        input.focus();
 
-    await requestWakeLock();
+        async function tryPassword() {
+            const pwd = input.value;
+            if (!pwd) return;
+            submit.disabled = true;
+            submit.innerHTML = '<span class="spinner-small"></span> Verifying...';
+            errorDiv.style.display = 'none';
 
-    let url = '/api/policies/refresh-stream?vault_key=' + encodeURIComponent(vaultKey);
-    if (forceRefresh) url += '&force=true';
-    const es = new EventSource(url);
-    currentRefreshEs = es;
-
-    es.addEventListener('progress', (e) => {
-        const d = JSON.parse(e.data);
-        updateProgress(d.pct, d.message);
-        if (d.stage) setActiveStage(d.stage);
-    });
-
-    es.addEventListener('stage_complete', (e) => {
-        const d = JSON.parse(e.data);
-        updateProgress(d.pct || null, d.message);
-        if (d.stage) completeStage(d.stage);
-    });
-
-    es.addEventListener('done', (e) => {
-        const d = JSON.parse(e.data);
-        es.close();
-        completeStage('finalize');
-        updateProgress(100, 'All done!');
-        setTimeout(() => applyRefreshResults(d, refreshBtn), 400);
-    });
-
-    es.addEventListener('error_event', (e) => {
-        const d = JSON.parse(e.data);
-        es.close();
-        hideProgress();
-        releaseWakeLock();
-        showToast('Refresh failed: ' + d.message);
-        isRefreshing = false;
-        currentRefreshEs = null;
-        refreshBtn.disabled = false;
-        if (d.message && (d.message.includes('re-authenticate') || d.message.includes('No credentials'))) {
-            refreshBtn.textContent = 'Re-login';
-            refreshBtn.onclick = () => { window.location.href = '/auth/login'; };
+            const reader = new FileReader();
+            reader.onload = async function() {
+                try {
+                    await pdfjsLib.getDocument({ data: new Uint8Array(reader.result), password: pwd }).promise;
+                    // Success
+                    overlay.remove();
+                    resolve(pwd);
+                } catch (e) {
+                    submit.disabled = false;
+                    submit.innerHTML = 'Unlock';
+                    if (e.name === 'PasswordException') {
+                        errorDiv.textContent = 'Incorrect password. Please try again.';
+                        errorDiv.style.display = 'block';
+                        input.value = '';
+                        input.focus();
+                    } else {
+                        errorDiv.textContent = 'Error unlocking PDF.';
+                        errorDiv.style.display = 'block';
+                    }
+                }
+            };
+            reader.readAsArrayBuffer(file);
         }
-    });
 
-    es.onerror = () => {
-        es.close();
-        currentRefreshEs = null;
-        pollForResults(vaultKey, refreshBtn);
-    };
+        submit.addEventListener('click', tryPassword);
+        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') tryPassword(); });
+        close.addEventListener('click', () => { overlay.remove(); resolve(null); });
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) { overlay.remove(); resolve(null); } });
+    });
 }
 
 // ── Upload PDF ─────────────────────────────────
@@ -353,27 +332,45 @@ async function handlePdfUpload(input) {
     input.value = ''; // reset so same file can be re-selected
     if (!file) return;
 
+    let password = '';
+    try {
+        const needsPassword = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = async function() {
+                try {
+                    await pdfjsLib.getDocument({ data: new Uint8Array(reader.result) }).promise;
+                    resolve(false);
+                } catch (e) {
+                    if (e.name === 'PasswordException') resolve(true);
+                    else reject(e);
+                }
+            };
+            reader.onerror = reject;
+            reader.readAsArrayBuffer(file);
+        });
+
+        if (needsPassword) {
+            password = await promptPdfPassword(file);
+            if (password === null) {
+                showToast('Upload cancelled.');
+                return;
+            }
+        }
+    } catch (e) {
+        showToast('Error reading PDF: ' + e.message);
+        return;
+    }
+
     const uploadBtn = document.getElementById('upload-btn');
     const origText = uploadBtn.innerHTML;
     uploadBtn.disabled = true;
     uploadBtn.innerHTML = '<span class="spinner-small"></span> Uploading...';
+    showProgress('Processing PDF...');
+    setActiveStage('extract');
 
     try {
-        const result = await uploadPdf(file, '');
-
-        if (result.needs_password) {
-            const password = prompt('This PDF is password-protected. Enter the password:');
-            if (!password) {
-                showToast('Upload cancelled.');
-                return;
-            }
-            const retryResult = await uploadPdf(file, password);
-            if (retryResult.error) {
-                showToast(retryResult.error);
-                return;
-            }
-            applyUploadResult(retryResult);
-        } else if (result.error) {
+        const result = await uploadPdf(file, password);
+        if (result.error) {
             showToast(result.error);
         } else {
             applyUploadResult(result);
@@ -383,6 +380,8 @@ async function handlePdfUpload(input) {
     } finally {
         uploadBtn.disabled = false;
         uploadBtn.innerHTML = origText;
+        hideProgress();
+        completeStage('finalize');
     }
 }
 
@@ -402,6 +401,12 @@ async function uploadPdf(file, password) {
 }
 
 function applyUploadResult(data) {
+    if (data.policy && data.policy.policy_number) {
+        if (hiddenPolicies.has(data.policy.policy_number)) {
+            hiddenPolicies.delete(data.policy.policy_number);
+            saveHiddenPolicies();
+        }
+    }
     if (data.policies) {
         allPolicies = data.policies;
     } else if (data.policy) {
@@ -923,9 +928,8 @@ function openModal(index) {
     if (p.intermediary) rows += propRow('Intermediary', p.intermediary);
     if (p.coverages && p.coverages.length) rows += propRow('Coverages', p.coverages.join(', '), true);
     if (p.notes) rows += propRow('Notes', p.notes, true);
-    if (p.source_msg_id) {
-        const gmailUrl = `https://mail.google.com/mail/u/0/#inbox/${p.source_msg_id}`;
-        rows += propRow('Source Email', `<span class="tooltip-wrap"><a href="${gmailUrl}" target="_blank" rel="noopener">${p.source_email || 'View in Gmail'}</a><span class="tooltip-text">If the link opens the wrong account, change /u/0/ in the URL to /u/1/, /u/2/, etc.</span></span>`);
+    if (p.source_email || p.pdf_filename) {
+        rows += propRow('Source File', p.pdf_filename || p.source_email || 'Uploaded Document');
     }
 
     const container = document.getElementById('modal-container');
@@ -1081,7 +1085,9 @@ function formatCurrency(amount) {
 function formatDate(d) {
     if (!d) return '---';
     try {
-        return new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+        const dateObj = new Date(d);
+        if (isNaN(dateObj.getTime())) return d;
+        return dateObj.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
     } catch {
         return d;
     }

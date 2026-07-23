@@ -597,9 +597,9 @@ def main():
         llm_config = {
             "api_key": os.getenv("GROQ_API_KEY"),
             "base_url": "https://api.groq.com/openai/v1",
-            "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+            "model": "llama-3.1-8b-instant",
         }
-        print("LLM: Groq (Llama 4 Scout)")
+        print("LLM: Groq (Llama 3.1 8B Instant)")
     else:
         llm_config = {
             "api_key": os.getenv("XAI_API_KEY"),

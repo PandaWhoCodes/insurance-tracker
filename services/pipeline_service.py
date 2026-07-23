@@ -64,6 +64,7 @@ Return a JSON object with these fields:
     "premium_frequency": "yearly | monthly | one_time | quarterly | single",
     "policy_start": "YYYY-MM-DD or null",
     "policy_end": "YYYY-MM-DD or null",
+    "policy_term": number of years (integer) or null,
     "status": "ACTIVE | EXPIRED | UNKNOWN",
     "vehicle": {"make": "string", "model": "string", "registration": "string"} or null,
     "nominee": {"name": "string", "relationship": "string"} or null,
@@ -83,10 +84,11 @@ RULES:
 - Determine status: if policy_end date is in the past, mark EXPIRED. If in the future, ACTIVE. Otherwise UNKNOWN.
 - If the document is not an insurance policy (e.g., marketing email, newsletter, bank statement), return exactly: {"skip": true}
 
-IMPORTANT — DATES:
+IMPORTANT — DATES & TERM:
 - If the document contains multiple policy periods (e.g., original and renewal), always use the LATEST policy period dates.
 - For multi-year policies (e.g., 2-year or 3-year), set policy_end to the FINAL expiry date, not an intermediate year.
 - Look carefully for "Policy Period", "Period of Insurance", "Risk Start Date / End Date" fields.
+- Extract the policy term in years if available (e.g., "Policy Term: 34 years" -> 34).
 
 IMPORTANT — PREMIUM:
 - Return the TOTAL premium amount INCLUDING all taxes (GST, IGST, service tax).
@@ -193,8 +195,8 @@ class PipelineService:
                 api_key=os.getenv("GROQ_API_KEY"),
                 base_url="https://api.groq.com/openai/v1",
             )
-            self.model = "meta-llama/llama-4-scout-17b-16e-instruct"
-            logger.info("Using Groq (Llama 4 Scout) for extraction")
+            self.model = "llama-3.1-8b-instant"
+            logger.info("Using Groq (Llama 3.1 8B Instant) for extraction")
         else:
             self.client = AsyncOpenAI(
                 api_key=os.getenv("XAI_API_KEY"),
@@ -504,7 +506,7 @@ class PipelineService:
             llm_config = {
                 "api_key": os.getenv("GROQ_API_KEY"),
                 "base_url": "https://api.groq.com/openai/v1",
-                "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+                "model": "llama-3.1-8b-instant",
             }
         else:
             llm_config = {

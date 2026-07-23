@@ -123,7 +123,7 @@
 
         <div class="legal-section">
             <h2>Overview</h2>
-            <p>Policies.life is a personal tool that helps you view your insurance policies by scanning your Gmail for policy documents. We are committed to keeping your data private and under your control.</p>
+            <p>Policies.life is a personal tool that helps you view your insurance policies by extracting details from your uploaded policy PDFs. We are committed to keeping your data private and under your control.</p>
             <div class="highlight-box">
                 <p>We do not sell, share, or monetize your data in any way. Your policy information is encrypted and accessible only with your vault key.</p>
             </div>
@@ -133,7 +133,6 @@
             <h2>Information We Access</h2>
             <p>When you sign in with Google, we request the following permissions:</p>
             <ul>
-                <li><strong>Gmail (read-only)</strong> — We search your inbox for insurance-related emails using specific search terms (e.g., "health insurance", "car insurance", "term life"). We only read email metadata (subject, sender, date) and download PDF attachments from matching emails. We cannot modify, delete, or send emails.</li>
                 <li><strong>Email address</strong> — Used to identify your account and associate your policies with your session.</li>
                 <li><strong>Basic profile info</strong> — Your name, used to greet you in the app.</li>
             </ul>
@@ -142,9 +141,7 @@
         <div class="legal-section">
             <h2>How We Process Your Data</h2>
             <ul>
-                <li><strong>Email metadata</strong> (subject lines, sender, date) is sent to an AI model (Grok by xAI) to determine which emails are actually insurance policies vs. marketing/newsletters.</li>
-                <li><strong>PDF text</strong> from policy documents is sent to the same AI model to extract structured policy details (insurer, policy number, dates, premium amounts).</li>
-                <li><strong>Triage results</strong> (whether an email is relevant or not, and why) are stored in plaintext in our database for performance — so we don't re-process the same emails.</li>
+                <li><strong>PDF text</strong> from policy documents is sent to an AI model (Grok by xAI) to extract structured policy details (insurer, policy number, dates, premium amounts).</li>
                 <li><strong>Extracted policy data</strong> is encrypted with AES-256-GCM using a key derived from your vault password before being stored in the database.</li>
             </ul>
         </div>
@@ -154,16 +151,14 @@
             <ul>
                 <li><strong>Database:</strong> We use Turso (cloud SQLite) to store processing results. Sensitive fields (extraction details, policy information) are encrypted. Without your vault key, this data is unreadable.</li>
                 <li><strong>Session:</strong> Your login session is stored in an encrypted cookie. It contains your email and name — no policy data.</li>
-                <li><strong>OAuth tokens:</strong> Your Google OAuth refresh token is stored locally on the server to maintain Gmail access between sessions.</li>
-                <li><strong>PDFs:</strong> Policy PDF files are downloaded temporarily to a local directory for text extraction. They are not uploaded to any external service — only the extracted text is sent to the AI.</li>
+                <li><strong>PDFs:</strong> Policy PDF files are uploaded for processing, and text is extracted in memory. The files are instantly deleted from our servers after the text is sent to the AI.</li>
             </ul>
         </div>
 
         <div class="legal-section">
             <h2>Third-Party Services</h2>
             <ul>
-                <li><strong>Google (Gmail API)</strong> — For reading your insurance emails. Governed by <a href="https://policies.google.com/privacy" target="_blank" style="color: var(--accent);">Google's Privacy Policy</a>.</li>
-                <li><strong>xAI (Grok API)</strong> — For AI-powered email triage and policy extraction. Email subjects and PDF text are sent to their API for processing.</li>
+                <li><strong>xAI (Grok API)</strong> — For AI-powered policy extraction. PDF text is sent to their API for processing.</li>
                 <li><strong>Turso</strong> — Cloud database for storing encrypted processing results.</li>
             </ul>
         </div>
@@ -173,18 +168,17 @@
             <p>Your vault key is the password used to encrypt and decrypt your policy data. It is:</p>
             <ul>
                 <li>Never stored in the database, cookies, or anywhere on the server</li>
-                <li>Only held in memory during an active refresh operation</li>
+                <li>Only held in memory during processing</li>
                 <li>Used to derive an AES-256 encryption key via PBKDF2 (100,000 iterations)</li>
                 <li>Verified via a one-way hash — we can tell if you entered the wrong key, but we cannot recover the right one</li>
             </ul>
-            <p>If you forget your vault key, your cached data cannot be recovered. You can still do a fresh refresh with a new key.</p>
+            <p>If you forget your vault key, your cached data cannot be recovered. You can still upload your policies again with a new key.</p>
         </div>
 
         <div class="legal-section">
             <h2>Data Retention</h2>
             <ul>
-                <li>Cached processing results remain in the database until you do a new refresh (which replaces them).</li>
-                <li>You can revoke Google access at any time from your <a href="https://myaccount.google.com/permissions" target="_blank" style="color: var(--accent);">Google Account permissions</a>.</li>
+                <li>Extracted policy results remain encrypted in the database.</li>
                 <li>Logging out clears your session but does not delete cached data from the database (it remains encrypted and inaccessible without your vault key).</li>
             </ul>
         </div>
@@ -192,7 +186,6 @@
         <div class="legal-section">
             <h2>Your Rights</h2>
             <ul>
-                <li>You can revoke Gmail access at any time via Google Account settings.</li>
                 <li>You can request deletion of your data from our database.</li>
                 <li>You control your vault key — without it, nobody (including us) can read your policy data.</li>
             </ul>
@@ -208,6 +201,7 @@
         <a href="/how-it-works">How it works</a>
         <a href="/privacy">Privacy Policy</a>
         <a href="/terms">Terms of Service</a>
+        <a href="https://github.com/PandaWhoCodes/insurance-tracker" target="_blank">Source Code</a>
     </footer>
 </body>
 </html>

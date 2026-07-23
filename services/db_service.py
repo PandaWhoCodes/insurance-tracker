@@ -47,6 +47,7 @@ SCHEMA_SQL = [
         user_id INTEGER NOT NULL,
         policy_number_norm TEXT,
         policy_json TEXT NOT NULL,
+        pdf_password TEXT,
         updated_at TEXT NOT NULL,
         FOREIGN KEY (user_id) REFERENCES users(id)
     )""",
@@ -56,6 +57,7 @@ SCHEMA_SQL = [
 
 MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN google_token TEXT",
+    "ALTER TABLE policies ADD COLUMN pdf_password TEXT",
 ]
 
 # ── Encryption helpers ────────────────────────────
@@ -266,7 +268,7 @@ async def get_google_token(email: str) -> str | None:
 async def load_final_policies(user_id: int, key: bytes) -> list[dict] | None:
     """Load and decrypt all saved policies for a user. Returns None if no data."""
     rows = await db.query(
-        "SELECT policy_json, updated_at FROM policies WHERE user_id = ?", [user_id]
+        "SELECT policy_json, pdf_password, updated_at FROM policies WHERE user_id = ?", [user_id]
     )
     if not rows:
         return None
@@ -274,7 +276,10 @@ async def load_final_policies(user_id: int, key: bytes) -> list[dict] | None:
     for r in rows:
         try:
             plaintext = decrypt(r["policy_json"], key)
-            policies.append(json.loads(plaintext))
+            p = json.loads(plaintext)
+            if r.get("pdf_password"):
+                p["pdf_password"] = decrypt(r["pdf_password"], key)
+            policies.append(p)
         except Exception as e:
             logger.warning(f"Failed to decrypt policy: {e}")
     return policies
@@ -287,9 +292,17 @@ async def save_final_policies(user_id: int, policies: list[dict], key: bytes):
     now = datetime.now().isoformat()
     for p in policies:
         pn = p.get("policy_number") or ""
+        # Pop password so it's not stored in the general json
+        pwd = p.pop("pdf_password", None)
+        encrypted_pwd = encrypt(pwd, key) if pwd else None
         encrypted = encrypt(json.dumps(p), key)
+        
+        # Put it back in memory object so the UI still has it if needed this session
+        if pwd:
+            p["pdf_password"] = pwd
+            
         await db.execute(
-            """INSERT INTO policies (user_id, policy_number_norm, policy_json, updated_at)
-               VALUES (?, ?, ?, ?)""",
-            [user_id, pn, encrypted, now],
+            """INSERT INTO policies (user_id, policy_number_norm, policy_json, pdf_password, updated_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            [user_id, pn, encrypted, encrypted_pwd, now],
         )

@@ -1,7 +1,8 @@
 """Tests for FastAPI routes in app.py."""
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
-from unittest.mock import patch, AsyncMock
 
 
 @pytest.fixture
@@ -13,8 +14,9 @@ def client():
         mock_db.close = AsyncMock()
         mock_db._client = None
         # Import app after patching
-        from app import app
         from fastapi.testclient import TestClient
+
+        from app import app
         with TestClient(app) as c:
             yield c
 
@@ -47,7 +49,7 @@ class TestApiMe:
 
 class TestApiPolicies:
     def test_unauthenticated(self, client):
-        response = client.get("/api/policies")
+        response = client.post("/api/policies", json={"vault_key": ""})
         assert response.status_code == 401
 
     def test_refresh_unauthenticated(self, client):

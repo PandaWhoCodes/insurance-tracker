@@ -1,6 +1,7 @@
-import os
 import json
 import logging
+import os
+
 from openai import OpenAI
 
 logger = logging.getLogger(__name__)
@@ -104,8 +105,7 @@ Document text:
             # Strip markdown code blocks
             if content.startswith("```"):
                 content = content.split("```")[1]
-                if content.startswith("json"):
-                    content = content[4:]
+                content = content.removeprefix("json")
                 content = content.strip()
             if content.endswith("```"):
                 content = content[:-3].strip()

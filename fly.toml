@@ -11,6 +11,6 @@ primary_region = "bom"
   min_machines_running = 0
 
 [[vm]]
-  memory = "2gb"
-  cpu_kind = "performance"
+  memory = "512mb"
+  cpu_kind = "shared"
   cpus = 1

@@ -1,18 +1,19 @@
 """Tests for services/db_service.py domain functions with mocked DB."""
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import patch, AsyncMock, MagicMock
 
 from services.db_service import (
-    get_or_create_user,
-    verify_vault_key,
-    get_processed_msg_ids,
-    save_triage_result,
-    save_extraction_result,
-    get_cached_extractions,
-    save_final_policies,
-    derive_key,
     _hash_vault_key,
+    derive_key,
+    get_cached_extractions,
+    get_or_create_user,
+    get_processed_msg_ids,
+    save_extraction_result,
+    save_final_policies,
+    save_triage_result,
+    verify_vault_key,
 )
 
 

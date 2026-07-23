@@ -1,8 +1,8 @@
-import os
-import json
 import hashlib
+import json
 import logging
-from base64 import b64encode, b64decode
+import os
+from base64 import b64decode, b64encode
 from datetime import datetime
 
 # Fix macOS Python SSL cert issue (must be set before aiohttp imports)
@@ -14,9 +14,9 @@ if not os.environ.get("SSL_CERT_FILE"):
         pass
 
 import libsql_client
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives import hashes
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,7 @@ SCHEMA_SQL = [
         user_id INTEGER NOT NULL,
         policy_number_norm TEXT,
         policy_json TEXT NOT NULL,
+        pdf_password TEXT,
         updated_at TEXT NOT NULL,
         FOREIGN KEY (user_id) REFERENCES users(id)
     )""",
@@ -56,6 +57,7 @@ SCHEMA_SQL = [
 
 MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN google_token TEXT",
+    "ALTER TABLE policies ADD COLUMN pdf_password TEXT",
 ]
 
 # ── Encryption helpers ────────────────────────────
@@ -142,7 +144,7 @@ db = Database()
 # ── Domain functions ──────────────────────────────
 
 
-async def get_or_create_user(email: str, name: str = None) -> int:
+async def get_or_create_user(email: str, name: str | None = None) -> int:
     """Get existing user or create one. Returns user_id."""
     row = await db.query_one("SELECT id FROM users WHERE email = ?", [email])
     if row:
@@ -203,9 +205,11 @@ async def save_triage_result(msg_id: str, user_id: int, is_relevant: bool, reaso
 
 
 async def save_extraction_result(
-    msg_id: str, user_id: int, extraction_json: dict, key: bytes
+    msg_id: str, user_id: int, extraction_json: dict | list, key: bytes
 ):
-    """Encrypt and save extraction JSON for a processed email."""
+    """Encrypt and save extraction JSON for a processed email.
+    Accepts a single dict or a list of dicts (multiple policies from one email).
+    """
     encrypted = encrypt(json.dumps(extraction_json), key)
     now = datetime.now().isoformat()
     await db.execute(
@@ -264,7 +268,7 @@ async def get_google_token(email: str) -> str | None:
 async def load_final_policies(user_id: int, key: bytes) -> list[dict] | None:
     """Load and decrypt all saved policies for a user. Returns None if no data."""
     rows = await db.query(
-        "SELECT policy_json, updated_at FROM policies WHERE user_id = ?", [user_id]
+        "SELECT policy_json, pdf_password, updated_at FROM policies WHERE user_id = ?", [user_id]
     )
     if not rows:
         return None
@@ -272,7 +276,10 @@ async def load_final_policies(user_id: int, key: bytes) -> list[dict] | None:
     for r in rows:
         try:
             plaintext = decrypt(r["policy_json"], key)
-            policies.append(json.loads(plaintext))
+            p = json.loads(plaintext)
+            if r.get("pdf_password"):
+                p["pdf_password"] = decrypt(r["pdf_password"], key)
+            policies.append(p)
         except Exception as e:
             logger.warning(f"Failed to decrypt policy: {e}")
     return policies
@@ -285,9 +292,17 @@ async def save_final_policies(user_id: int, policies: list[dict], key: bytes):
     now = datetime.now().isoformat()
     for p in policies:
         pn = p.get("policy_number") or ""
+        # Pop password so it's not stored in the general json
+        pwd = p.pop("pdf_password", None)
+        encrypted_pwd = encrypt(pwd, key) if pwd else None
         encrypted = encrypt(json.dumps(p), key)
+        
+        # Put it back in memory object so the UI still has it if needed this session
+        if pwd:
+            p["pdf_password"] = pwd
+            
         await db.execute(
-            """INSERT INTO policies (user_id, policy_number_norm, policy_json, updated_at)
-               VALUES (?, ?, ?, ?)""",
-            [user_id, pn, encrypted, now],
+            """INSERT INTO policies (user_id, policy_number_norm, policy_json, pdf_password, updated_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            [user_id, pn, encrypted, encrypted_pwd, now],
         )

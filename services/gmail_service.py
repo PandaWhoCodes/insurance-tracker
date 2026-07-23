@@ -1,14 +1,14 @@
 import base64
-import re
 import logging
+import re
 import time
-from pathlib import Path
 from datetime import datetime, timedelta
+from pathlib import Path
 
-from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request
-from googleapiclient.discovery import build
 import fitz  # PyMuPDF
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
 
 logger = logging.getLogger(__name__)
 
@@ -110,16 +110,49 @@ class GmailService:
         Uses batch API to fetch metadata in chunks of 25 with retry + backoff.
         Returns list of {msg_id, subject, from, date, snippet}. No PDF download.
         """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         t_total = time.time()
         all_msg_ids = set()
         queries = get_search_queries()
 
+        # Run search queries in parallel — each thread gets its own Gmail service
+        # (httplib2 is not thread-safe, so we build a fresh service per thread)
         t_search = time.time()
-        for query in queries:
+        token_path = str(self.token_path)
+
+        def run_query(query):
+            # Build a dedicated Gmail service for this thread
+            creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+            if not creds or not creds.valid:
+                if creds and creds.expired and creds.refresh_token:
+                    creds.refresh(Request())
+            svc = build("gmail", "v1", credentials=creds)
             t0 = time.time()
-            messages = self._search_emails(query, max_results=100)
-            logger.info(f"[Timing] Search query: {time.time() - t0:.2f}s — '{query[:50]}' → {len(messages)} results")
-            all_msg_ids.update(m["id"] for m in messages)
+            messages = []
+            try:
+                result = svc.users().messages().list(
+                    userId="me", q=query, maxResults=100
+                ).execute()
+                messages = result.get("messages", [])
+                while "nextPageToken" in result and len(messages) < 100:
+                    result = svc.users().messages().list(
+                        userId="me", q=query,
+                        maxResults=100 - len(messages),
+                        pageToken=result["nextPageToken"],
+                    ).execute()
+                    messages.extend(result.get("messages", []))
+            except Exception as e:
+                logger.error(f"Error searching for '{query}': {e}")
+            elapsed = time.time() - t0
+            return query, messages, elapsed
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {executor.submit(run_query, q): q for q in queries}
+            for future in as_completed(futures):
+                query, messages, elapsed = future.result()
+                logger.info(f"[Timing] Search query: {elapsed:.2f}s — '{query[:50]}' → {len(messages)} results")
+                all_msg_ids.update(m["id"] for m in messages)
         logger.info(f"[Timing] All searches: {time.time() - t_search:.2f}s — {len(queries)} queries → {len(all_msg_ids)} unique emails")
 
         if not all_msg_ids:
@@ -160,8 +193,8 @@ class GmailService:
                 for mid in batch_chunk:
                     batch.add(
                         self.service.users().messages().get(
-                            userId="me", id=mid, format="metadata",
-                            metadataHeaders=["Subject", "From", "Date"],
+                            userId="me", id=mid, format="full",
+                            fields="id,sizeEstimate,snippet,payload(headers,mimeType,parts(filename,mimeType,body(size),parts(filename,mimeType,body(size))))",
                         ),
                         callback=make_callback(mid),
                     )
@@ -170,11 +203,8 @@ class GmailService:
 
                 for mid, msg in batch_results.items():
                     headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
-                    # Check for attachments in payload parts
-                    parts = msg.get("payload", {}).get("parts", [])
-                    has_att = any(
-                        p.get("filename") for p in parts
-                    ) if parts else False
+                    # Check for PDF attachments in payload parts (including nested)
+                    has_att = self._check_has_pdf_attachment(msg.get("payload", {}))
                     results[mid] = {
                         "msg_id": mid,
                         "subject": headers.get("Subject", "(no subject)"),
@@ -182,6 +212,7 @@ class GmailService:
                         "date": headers.get("Date", ""),
                         "snippet": msg.get("snippet", ""),
                         "has_attachments": has_att,
+                        "sizeEstimate": msg.get("sizeEstimate", 0),
                     }
 
                 failed.extend(batch_failed)
@@ -342,9 +373,7 @@ class GmailService:
 
                 # Only PDFs
                 if not (
-                    mime_type.startswith("application/pdf")
-                    or mime_type.startswith("application/octet-stream")
-                    or filename.lower().endswith(".pdf")
+                    mime_type.startswith(("application/pdf", "application/octet-stream")) or filename.lower().endswith(".pdf")
                 ):
                     continue
 
@@ -499,6 +528,20 @@ class GmailService:
                     return result
             return None
         return walk(payload) or ""
+
+    @staticmethod
+    def _check_has_pdf_attachment(payload: dict) -> bool:
+        """Check if payload contains any PDF attachment (walks nested parts)."""
+        def walk(parts):
+            for p in parts:
+                fn = (p.get("filename") or "").lower()
+                mime = (p.get("mimeType") or "").lower()
+                if fn and (fn.endswith(".pdf") or "pdf" in mime):
+                    return True
+                if p.get("parts") and walk(p["parts"]):
+                    return True
+            return False
+        return walk(payload.get("parts", []))
 
     def _extract_body_text(self, payload: dict) -> str:
         text = ""

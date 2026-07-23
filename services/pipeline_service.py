@@ -15,6 +15,13 @@ logger = logging.getLogger(__name__)
 
 EXTRACT_CONCURRENCY = 3
 
+# Check if Modal is available
+try:
+    import modal  # noqa: F401
+    MODAL_AVAILABLE = True
+except ImportError:
+    MODAL_AVAILABLE = False
+
 # LIC plan table number → human-readable name mapping
 LIC_PLAN_NAMES = {
     "814": "Jeevan Anand (Endowment)",
@@ -57,6 +64,7 @@ Return a JSON object with these fields:
     "premium_frequency": "yearly | monthly | one_time | quarterly | single",
     "policy_start": "YYYY-MM-DD or null",
     "policy_end": "YYYY-MM-DD or null",
+    "policy_term": number of years (integer) or null,
     "status": "ACTIVE | EXPIRED | UNKNOWN",
     "vehicle": {"make": "string", "model": "string", "registration": "string"} or null,
     "nominee": {"name": "string", "relationship": "string"} or null,
@@ -76,10 +84,11 @@ RULES:
 - Determine status: if policy_end date is in the past, mark EXPIRED. If in the future, ACTIVE. Otherwise UNKNOWN.
 - If the document is not an insurance policy (e.g., marketing email, newsletter, bank statement), return exactly: {"skip": true}
 
-IMPORTANT — DATES:
+IMPORTANT — DATES & TERM:
 - If the document contains multiple policy periods (e.g., original and renewal), always use the LATEST policy period dates.
 - For multi-year policies (e.g., 2-year or 3-year), set policy_end to the FINAL expiry date, not an intermediate year.
 - Look carefully for "Policy Period", "Period of Insurance", "Risk Start Date / End Date" fields.
+- Extract the policy term in years if available (e.g., "Policy Term: 34 years" -> 34).
 
 IMPORTANT — PREMIUM:
 - Return the TOTAL premium amount INCLUDING all taxes (GST, IGST, service tax).
@@ -170,8 +179,7 @@ def _strip_json(content: str) -> str:
     """Strip markdown code blocks from Grok response."""
     if content.startswith("```"):
         content = content.split("```")[1]
-        if content.startswith("json"):
-            content = content[4:]
+        content = content.removeprefix("json")
         content = content.strip()
     if content.endswith("```"):
         content = content[:-3].strip()
@@ -186,8 +194,8 @@ class PipelineService:
                 api_key=os.getenv("GROQ_API_KEY"),
                 base_url="https://api.groq.com/openai/v1",
             )
-            self.model = "meta-llama/llama-4-scout-17b-16e-instruct"
-            logger.info("Using Groq (Llama 4 Scout) for extraction")
+            self.model = "llama-3.1-8b-instant"
+            logger.info("Using Groq (Llama 3.1 8B Instant) for extraction")
         else:
             self.client = AsyncOpenAI(
                 api_key=os.getenv("XAI_API_KEY"),
@@ -239,6 +247,8 @@ class PipelineService:
             logger.info(f"[Timing] Triage classify_batch: {time.time() - t0:.2f}s for {total} emails")
 
             t0 = time.time()
+            triage_batch_stmts = []
+            now = datetime.now().isoformat()
             for i, (is_relevant, reason, score) in enumerate(results):
                 meta = new_emails[i]
                 if is_relevant:
@@ -248,14 +258,30 @@ class PipelineService:
                     skipped += 1
                     logger.info(f"[Triage NO]  {meta['subject'][:60]} — {reason}")
 
-                # Save to DB
+                # Collect for batch DB save
                 if user_id is not None:
-                    try:
-                        await db_service.save_triage_result(
-                            meta["msg_id"], user_id, is_relevant, reason
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to save triage for {meta['msg_id']}: {e}")
+                    triage_batch_stmts.append((
+                        """INSERT OR REPLACE INTO processed_emails
+                           (msg_id, user_id, is_relevant, triage_reason, processed_at)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        [meta["msg_id"], user_id, int(is_relevant), reason, now],
+                    ))
+
+            # Batch save all triage results in one round-trip
+            if triage_batch_stmts:
+                try:
+                    from services.db_service import db as turso_db
+                    # libsql_client.batch() takes list of InStatement (sql, args) tuples
+                    await turso_db._client.batch(triage_batch_stmts)
+                except Exception as e:
+                    logger.warning(f"Batch triage save failed, falling back to individual: {e}")
+                    # Fallback: save individually
+                    from services.db_service import db as turso_db
+                    for stmt, args in triage_batch_stmts:
+                        try:
+                            await turso_db.execute(stmt, args)
+                        except Exception:
+                            pass
             logger.info(f"[Timing] Triage DB saves: {time.time() - t0:.2f}s for {total} emails")
 
             yield {
@@ -424,6 +450,133 @@ class PipelineService:
             "cached": cached_count,
             "raw_policies": raw_policies,
             "message": f"Found {len(raw_policies)} policies in {elapsed:.1f}s",
+        }
+
+    # ── Stage 2 (Modal): Extract via Modal workers ───────
+
+    async def extract_modal(
+        self,
+        token_json: str,
+        user_email: str,
+        relevant_emails: list[dict],
+        skip_msg_ids: set[str] | None = None,
+        user_id: int | None = None,
+        vault_key_derived: bytes | None = None,
+    ):
+        """Modal-powered extraction: fans out PDF downloads + LLM calls in parallel.
+        Yields progress events. Final event has type='stage_complete' with raw_policies.
+        """
+        t_stage = time.time()
+        skip_msg_ids = skip_msg_ids or set()
+        new_emails = [m for m in relevant_emails if m["msg_id"] not in skip_msg_ids]
+        cached_count = len(relevant_emails) - len(new_emails)
+        total = len(new_emails)
+
+        # Deduplicate by msg_id
+        seen_ids = set()
+        deduped = []
+        for m in new_emails:
+            if m["msg_id"] not in seen_ids:
+                seen_ids.add(m["msg_id"])
+                deduped.append(m)
+        new_emails = deduped
+        total = len(new_emails)
+
+        if total == 0:
+            yield {
+                "type": "stage_complete",
+                "stage": "extract",
+                "count": 0,
+                "cached": cached_count,
+                "raw_policies": [],
+                "message": "No new emails to process",
+            }
+            return
+
+        yield {
+            "type": "progress",
+            "stage": "extract",
+            "pct": 38,
+            "message": f"Processing {total} emails via Modal workers...",
+        }
+
+        # Build LLM config
+        if os.getenv("GROQ_API_KEY"):
+            llm_config = {
+                "api_key": os.getenv("GROQ_API_KEY"),
+                "base_url": "https://api.groq.com/openai/v1",
+                "model": "llama-3.1-8b-instant",
+            }
+        else:
+            llm_config = {
+                "api_key": os.getenv("XAI_API_KEY"),
+                "base_url": "https://api.x.ai/v1",
+                "model": "grok-4-1-fast-non-reasoning",
+            }
+
+        msg_ids = [m["msg_id"] for m in new_emails]
+
+        yield {
+            "type": "progress",
+            "stage": "extract",
+            "pct": 42,
+            "message": f"Downloading PDFs + extracting in parallel ({total} emails)...",
+        }
+
+        # Call deployed Modal function (lookup by name, no app context needed)
+        import modal
+        process_emails_fn = modal.Function.from_name("insurance-track", "process_emails")
+
+        raw_policies = await asyncio.to_thread(
+            process_emails_fn.remote,
+            token_json,
+            user_email,
+            msg_ids,
+            llm_config,
+        )
+
+        elapsed = time.time() - t_stage
+        logger.info(
+            f"[Timing] EXTRACT_MODAL TOTAL: {elapsed:.2f}s — "
+            f"{len(raw_policies)} extracted, {cached_count} cached"
+        )
+
+        # Save extractions to DB (locally, after Modal returns)
+        # Group by msg_id since one email can produce multiple policies
+        if raw_policies and user_id is not None and vault_key_derived is not None:
+            from collections import defaultdict
+            by_msg = defaultdict(list)
+            for policy in raw_policies:
+                msg_id = policy.get("source_msg_id", "")
+                if msg_id:
+                    by_msg[msg_id].append(policy)
+            for msg_id, policies in by_msg.items():
+                try:
+                    data = policies[0] if len(policies) == 1 else policies
+                    await db_service.save_extraction_result(
+                        msg_id, user_id, data, vault_key_derived
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to save extraction for {msg_id}: {e}")
+
+        if not raw_policies and cached_count == 0:
+            yield {
+                "type": "stage_complete",
+                "stage": "extract",
+                "count": 0,
+                "cached": 0,
+                "raw_policies": [],
+                "message": "No policy documents found",
+            }
+            return
+
+        yield {
+            "type": "stage_complete",
+            "stage": "extract",
+            "count": len(raw_policies),
+            "cached": cached_count,
+            "raw_policies": raw_policies,
+            "message": f"Found {len(raw_policies)} policies in {elapsed:.1f}s (Modal)",
         }
 
     async def _grok_extract(self, doc: dict) -> dict | None:

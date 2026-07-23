@@ -74,13 +74,6 @@
                     <p class="landing-section-label">How it works</p>
                     <div class="landing-steps">
                         <div class="landing-step">
-                            <div class="landing-step-icon" style="background: var(--blue-bg); color: #2576a5;">
-                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
-                            </div>
-                            <h3>Connect your Gmail</h3>
-                            <p>We scan your inbox for insurance emails. Or skip this and upload policy PDFs directly.</p>
-                        </div>
-                        <div class="landing-step">
                             <div class="landing-step-icon" style="background: var(--orange-bg); color: var(--orange);">
                                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
                             </div>
@@ -117,15 +110,6 @@
                             <div>
                                 <h4>We can't see your policies</h4>
                                 <p>All policy data stored in our database is encrypted. Without your vault key, it's unreadable &mdash; even to us. If you lose your key, we can't recover your data.</p>
-                            </div>
-                        </div>
-                        <div class="landing-trust-item">
-                            <div class="landing-trust-icon green">
-                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-                            </div>
-                            <div>
-                                <h4>Read-only Gmail access</h4>
-                                <p>We request the minimum permissions needed. Gmail access is read-only &mdash; we never modify, delete, or send emails. And it's completely optional.</p>
                             </div>
                         </div>
                         <div class="landing-trust-item">
@@ -168,10 +152,6 @@
                             <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path d="M7.646 1.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 2.707V11.5a.5.5 0 0 1-1 0V2.707L5.354 4.854a.5.5 0 1 1-.708-.708l3-3z"/></svg>
                             Upload PDF
                         </button>
-                        <button id="refresh-btn" class="btn btn-secondary" onclick="refreshPolicies(true)">
-                            <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/><path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/></svg>
-                            Refresh from Gmail
-                        </button>
                         <button class="btn btn-ghost" onclick="doLogout()">Logout</button>
                     </div>
                     <!-- Mobile overflow menu -->
@@ -182,10 +162,6 @@
                         <button class="mobile-menu-item" onclick="document.getElementById('pdf-upload-input').click(); closeMobileMenu();">
                             <svg viewBox="0 0 16 16" fill="currentColor" width="16" height="16"><path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path d="M7.646 1.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 2.707V11.5a.5.5 0 0 1-1 0V2.707L5.354 4.854a.5.5 0 1 1-.708-.708l3-3z"/></svg>
                             Upload PDF
-                        </button>
-                        <button class="mobile-menu-item" id="mobile-refresh-btn" onclick="refreshPolicies(true); closeMobileMenu();">
-                            <svg viewBox="0 0 16 16" fill="currentColor" width="16" height="16"><path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/><path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/></svg>
-                            <span>Refresh from Gmail</span>
                         </button>
                         <div class="mobile-menu-divider"></div>
                         <button class="mobile-menu-item" onclick="doLogout()">
@@ -199,13 +175,12 @@
             <!-- Progress -->
             <div id="progress-section" class="progress-section hidden">
                 <div class="progress-stages">
-                    <span class="stage-dot" data-stage="gmail">Scan</span>
                     <span class="stage-dot" data-stage="triage">Review</span>
                     <span class="stage-dot" data-stage="extract">Extract</span>
                     <span class="stage-dot" data-stage="finalize">Organize</span>
                 </div>
                 <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
-                <p id="progress-text" class="progress-text">Fetching emails from Gmail...</p>
+                <p id="progress-text" class="progress-text">Processing PDF...</p>
             </div>
 
             <!-- Summary -->
@@ -225,9 +200,9 @@
             <!-- Empty State -->
             <div id="empty-state" class="empty-state hidden">
                 <p>No policies found yet.</p>
-                <button class="btn btn-primary" onclick="refreshPolicies(true)">
-                    <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/><path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/></svg>
-                    Fetch from Gmail
+                <button class="btn btn-primary" onclick="document.getElementById('pdf-upload-input').click()">
+                    <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path d="M7.646 1.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 2.707V11.5a.5.5 0 0 1-1 0V2.707L5.354 4.854a.5.5 0 1 1-.708-.708l3-3z"/></svg>
+                    Upload Document
                 </button>
             </div>
         </div>
@@ -243,10 +218,13 @@
         <a href="/privacy">Privacy</a>
         <span class="footer-sep">&middot;</span>
         <a href="/terms">Terms</a>
+        <span class="footer-sep">&middot;</span>
+        <a href="https://github.com/PandaWhoCodes/insurance-tracker" target="_blank">Source Code</a>
     </footer>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/3.0.3/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/5.0.2/jspdf.plugin.autotable.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
     <script src="/static/app.js"></script>
 </body>
 </html>

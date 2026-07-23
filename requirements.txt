@@ -10,3 +10,4 @@ itsdangerous
 python-multipart
 libsql-client
 cryptography
+modal

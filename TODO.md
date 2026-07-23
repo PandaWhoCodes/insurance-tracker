@@ -142,7 +142,22 @@
   - **UX:** Show "Reconnecting..." during poll, then render results or show "Try reloading in a minute"
 
 
-## 9. Other Ideas (Lower Priority)
+## 9. Performance / Cost Optimizations
+
+- [x] **Limit PDF page extraction to 10 pages max:** Insurance policy docs can be 50+ pages but all key info (policy number, dates, sum insured, members) is in the first few pages. Cap PyMuPDF extraction at 10 pages in `modal_app.py` `_do_fetch_and_extract()` to reduce LLM input tokens and speed up extraction.
+
+- [ ] **User rate limits & usage caps:** Prevent runaway costs from heavy or abusive usage. Needs:
+  - **Refresh limits:** Max 3 refreshes per user per day, 10 per month
+  - **Email cap:** Max emails sent to triage LLM per refresh (e.g. 500) — reject or truncate beyond that
+  - **PDF/extraction cap:** Max documents sent to Modal extraction per refresh (e.g. 50)
+  - **Upload limits:** Max 5 PDF uploads per day, 10 per month
+  - **DB tracking:** `usage_log` table — `user_id`, `action` (refresh/upload), `timestamp`, `email_count`, `doc_count`
+  - **Enforcement:** Check limits at start of refresh/upload endpoints, return 429 with friendly message ("You've reached today's limit, try again tomorrow")
+  - **Admin override:** Env var or DB flag to exempt specific users (e.g. own account)
+  - **Cost reference:** ~$0.025 per full refresh (435 emails, 37 docs). At 3 refreshes/day × 100 users = $7.50/day
+
+
+## 10. Other Ideas (Lower Priority)
 
 - **Policy comparison:** Side-by-side comparison of health plans (coverage, premium, sum insured)
 - **Renewal tracking:** Track premium payment history across years

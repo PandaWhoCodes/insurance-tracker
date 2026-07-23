@@ -1,9 +1,10 @@
 """Tests for pure functions in services/pipeline_service.py."""
 
 from unittest.mock import patch
+
 from freezegun import freeze_time
 
-from services.pipeline_service import _strip_json, _get_password_hint, LIC_PLAN_NAMES
+from services.pipeline_service import LIC_PLAN_NAMES, _get_password_hint, _strip_json
 from tests.conftest import _make_policy
 
 

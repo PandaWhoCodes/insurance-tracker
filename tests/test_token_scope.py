@@ -1,8 +1,8 @@
 """Tests for OAuth scope helpers and vault key guards in app.py."""
 
-import json
+from unittest.mock import AsyncMock, patch
+
 import pytest
-from unittest.mock import patch, AsyncMock
 
 
 @pytest.fixture
@@ -13,8 +13,9 @@ def client():
         mock_db.init_schema = AsyncMock()
         mock_db.close = AsyncMock()
         mock_db._client = None
-        from app import app
         from fastapi.testclient import TestClient
+
+        from app import app
         with TestClient(app) as c:
             yield c
 
@@ -25,8 +26,9 @@ def authed_client(client):
     # Inject session data by setting the session cookie
     client.cookies.set("session", "")  # clear
     # Use a direct approach: patch the session middleware
-    from app import app
     from starlette.testclient import TestClient
+
+    from app import app
 
     with patch("services.db_service.db") as mock_db:
         mock_db.connect = AsyncMock()

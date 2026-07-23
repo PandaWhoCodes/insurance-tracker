@@ -179,8 +179,7 @@ def _strip_json(content: str) -> str:
     """Strip markdown code blocks from Grok response."""
     if content.startswith("```"):
         content = content.split("```")[1]
-        if content.startswith("json"):
-            content = content[4:]
+        content = content.removeprefix("json")
         content = content.strip()
     if content.endswith("```"):
         content = content[:-3].strip()

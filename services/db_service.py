@@ -1,8 +1,8 @@
-import os
-import json
 import hashlib
+import json
 import logging
-from base64 import b64encode, b64decode
+import os
+from base64 import b64decode, b64encode
 from datetime import datetime
 
 # Fix macOS Python SSL cert issue (must be set before aiohttp imports)
@@ -14,9 +14,9 @@ if not os.environ.get("SSL_CERT_FILE"):
         pass
 
 import libsql_client
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives import hashes
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +144,7 @@ db = Database()
 # ── Domain functions ──────────────────────────────
 
 
-async def get_or_create_user(email: str, name: str = None) -> int:
+async def get_or_create_user(email: str, name: str | None = None) -> int:
     """Get existing user or create one. Returns user_id."""
     row = await db.query_one("SELECT id FROM users WHERE email = ?", [email])
     if row:

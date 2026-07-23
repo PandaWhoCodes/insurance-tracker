@@ -1,14 +1,14 @@
 import base64
-import re
 import logging
+import re
 import time
-from pathlib import Path
 from datetime import datetime, timedelta
+from pathlib import Path
 
-from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request
-from googleapiclient.discovery import build
 import fitz  # PyMuPDF
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
 
 logger = logging.getLogger(__name__)
 
@@ -373,9 +373,7 @@ class GmailService:
 
                 # Only PDFs
                 if not (
-                    mime_type.startswith("application/pdf")
-                    or mime_type.startswith("application/octet-stream")
-                    or filename.lower().endswith(".pdf")
+                    mime_type.startswith(("application/pdf", "application/octet-stream")) or filename.lower().endswith(".pdf")
                 ):
                     continue
 
@@ -540,9 +538,8 @@ class GmailService:
                 mime = (p.get("mimeType") or "").lower()
                 if fn and (fn.endswith(".pdf") or "pdf" in mime):
                     return True
-                if p.get("parts"):
-                    if walk(p["parts"]):
-                        return True
+                if p.get("parts") and walk(p["parts"]):
+                    return True
             return False
         return walk(payload.get("parts", []))
 

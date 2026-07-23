@@ -1,8 +1,9 @@
 """Tests for async pipeline methods with mocked externals."""
 
 import json
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import patch, AsyncMock, MagicMock
 
 
 def _make_pipeline_service():

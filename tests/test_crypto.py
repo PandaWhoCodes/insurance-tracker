@@ -3,7 +3,7 @@
 import pytest
 from cryptography.exceptions import InvalidTag
 
-from services.db_service import derive_key, encrypt, decrypt, _hash_vault_key
+from services.db_service import _hash_vault_key, decrypt, derive_key, encrypt
 
 
 class TestDeriveKey:

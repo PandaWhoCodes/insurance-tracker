@@ -29,7 +29,7 @@ class TestGroqTriage:
         }]
         results = await triage.classify_batch_async(emails)
         assert len(results) == 1
-        is_relevant, reason, score = results[0]
+        is_relevant, _reason, _score = results[0]
         assert is_relevant is True
 
     @pytest.mark.asyncio
@@ -44,7 +44,7 @@ class TestGroqTriage:
         }]
         results = await triage.classify_batch_async(emails)
         assert len(results) == 1
-        is_relevant, reason, score = results[0]
+        is_relevant, _reason, _score = results[0]
         assert is_relevant is False
 
     @pytest.mark.asyncio
@@ -60,7 +60,7 @@ class TestGroqTriage:
         }]
         results = await triage.classify_batch_async(emails)
         assert len(results) == 1
-        is_relevant, reason, score = results[0]
+        is_relevant, _reason, _score = results[0]
         assert is_relevant is True
 
     @pytest.mark.asyncio
@@ -79,7 +79,7 @@ class TestKeywordFallback:
             "snippet": "",
             "has_attachments": True,
         }
-        is_relevant, reason, score = triage._keyword_classify(meta)
+        is_relevant, _reason, score = triage._keyword_classify(meta)
         assert is_relevant is True
         assert score >= 0.3
 
@@ -90,7 +90,7 @@ class TestKeywordFallback:
             "snippet": "Top stock picks for today",
             "has_attachments": False,
         }
-        is_relevant, reason, score = triage._keyword_classify(meta)
+        is_relevant, _reason, _score = triage._keyword_classify(meta)
         assert is_relevant is False
 
     def test_thank_you_for_choosing_is_strong_positive(self, triage):
@@ -100,6 +100,6 @@ class TestKeywordFallback:
             "snippet": "",
             "has_attachments": True,
         }
-        is_relevant, reason, score = triage._keyword_classify(meta)
+        is_relevant, _reason, score = triage._keyword_classify(meta)
         assert is_relevant is True
         assert score >= 0.3

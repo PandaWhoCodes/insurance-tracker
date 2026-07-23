@@ -1,25 +1,30 @@
-import os
-import json
 import asyncio
+import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, UploadFile, File, Form
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
+from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-from starlette.middleware.sessions import SessionMiddleware
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build as google_build
+from pydantic import BaseModel
+from starlette.middleware.sessions import SessionMiddleware
 
+from services import db_service
+from services.cache_service import CacheService
+from services.db_service import db as turso_db
 from services.gmail_service import GmailService
 from services.grok_service import GrokService
-from services.cache_service import CacheService
 from services.pipeline_service import PipelineService
-from services.db_service import db as turso_db
-from services import db_service
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -711,7 +716,7 @@ async def unlock_pdf(request: Request):
         if "password" in err_repr:
             return JSONResponse({"error": "Wrong password. Please try again."}, status_code=401)
         logger.error(f"Unlock failed: {e}", exc_info=True)
-        return JSONResponse({"error": f"Failed to read PDF: {str(e)}"}, status_code=500)
+        return JSONResponse({"error": f"Failed to read PDF: {e!s}"}, status_code=500)
 
 
 @app.post("/api/policies/upload")
@@ -848,7 +853,7 @@ async def upload_pdf(
         if "password" in err_repr:
             return JSONResponse({"error": "Wrong password. Please try again."}, status_code=401)
         logger.error(f"Upload processing failed: {e}", exc_info=True)
-        return JSONResponse({"error": f"Failed to process PDF: {str(e)}"}, status_code=500)
+        return JSONResponse({"error": f"Failed to process PDF: {e!s}"}, status_code=500)
 
 
 if __name__ == "__main__":

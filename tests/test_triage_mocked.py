@@ -1,7 +1,8 @@
 """Tests for TriageService with mocked Groq API."""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from services.triage_service import TriageService
 
@@ -146,35 +147,35 @@ class TestKeywordClassify:
     def test_strong_positive_in_subject(self):
         ts = _make_triage(with_groq=False)
         meta = {"subject": "Your policy document is attached", "from": "", "snippet": "", "has_attachments": False}
-        is_rel, reason, score = ts._keyword_classify(meta)
+        is_rel, _reason, score = ts._keyword_classify(meta)
         assert is_rel is True
         assert score >= 0.3
 
     def test_thank_you_for_choosing_strong_positive(self):
         ts = _make_triage(with_groq=False)
         meta = {"subject": "Thank you for choosing Care Health Insurance", "from": "ahealthystart@careinsurance.com", "snippet": "", "has_attachments": True}
-        is_rel, reason, score = ts._keyword_classify(meta)
+        is_rel, _reason, score = ts._keyword_classify(meta)
         assert is_rel is True
         assert score >= 0.7  # strong_pos(0.4) + sender(0.2) + attachment(0.15)
 
     def test_careinsurance_sender_recognized(self):
         ts = _make_triage(with_groq=False)
         meta = {"subject": "Some insurance email", "from": "ahealthystart@careinsurance.com", "snippet": "", "has_attachments": False}
-        is_rel, reason, score = ts._keyword_classify(meta)
+        _is_rel, _reason, score = ts._keyword_classify(meta)
         # sender boost should be applied
         assert score >= 0.2
 
     def test_newsletter_rejected(self):
         ts = _make_triage(with_groq=False)
         meta = {"subject": "Daily Trading & Investment Ideas", "from": "news@example.com", "snippet": "top stocks mutual fund sip", "has_attachments": False}
-        is_rel, reason, score = ts._keyword_classify(meta)
+        is_rel, _reason, score = ts._keyword_classify(meta)
         assert is_rel is False
         assert score < 0.3
 
     def test_negative_keywords_reduce_score(self):
         ts = _make_triage(with_groq=False)
         meta = {"subject": "Special offer on health insurance", "from": "", "snippet": "buy now compare plans discount", "has_attachments": False}
-        is_rel, reason, score = ts._keyword_classify(meta)
+        _is_rel, _reason, score = ts._keyword_classify(meta)
         # Has weak positive (health insurance) but multiple negatives
         assert score < 0.3
 

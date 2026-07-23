@@ -34,7 +34,7 @@ class TestGroqBatchClassify:
 
         emails = [
             {"subject": "Policy copy attached", "from": "a@b.com", "snippet": "", "has_attachments": True},
-            {"subject": "Newsletter", "from": "c@d.com", "snippet": "", "has_attachments": False},
+            {"subject": "Newsletter", "from": "c@d.com", "snippet": "", "has_attachments": True},
             {"subject": "Thank you for choosing insurance", "from": "e@f.com", "snippet": "", "has_attachments": True},
         ]
         results = await ts.classify_batch_async(emails)
@@ -62,7 +62,7 @@ class TestGroqBatchClassify:
 
         emails = [
             {"subject": "Policy document", "from": "a@b.com", "snippet": "", "has_attachments": True},
-            {"subject": "Newsletter weekly", "from": "c@d.com", "snippet": "stocks", "has_attachments": False},
+            {"subject": "Newsletter weekly", "from": "c@d.com", "snippet": "stocks", "has_attachments": True},
         ]
         results = await ts.classify_batch_async(emails)
 
@@ -114,7 +114,7 @@ class TestGroqBatchClassify:
         )
 
         emails = [
-            {"subject": f"Email {i}", "from": "a@b.com", "snippet": "", "has_attachments": False}
+            {"subject": f"Email {i}", "from": "a@b.com", "snippet": "", "has_attachments": True}
             for i in range(35)
         ]
         results = await ts.classify_batch_async(emails)

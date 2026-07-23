@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build as google_build
@@ -182,8 +183,6 @@ async def get_me(request: Request):
         "has_gmail": False,
     }
 
-
-from pydantic import BaseModel
 
 class PolicyRequest(BaseModel):
     vault_key: str = ""
@@ -422,7 +421,7 @@ async def refresh_stream(request: Request, vault_key: str = "", force: bool = Fa
             raw_policies = []
             use_modal = False
             try:
-                import modal
+                import modal  # noqa: F401
                 use_modal = True
             except ImportError:
                 pass

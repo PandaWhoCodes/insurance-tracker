@@ -133,8 +133,6 @@ def _guess_provider(email_from: str, subject: str) -> str:
     return "Unknown Provider"
 
 
-import re
-
 
 def _extract_policy_number_from_subject(subject: str) -> str | None:
     m = re.search(r'(?:policy\s*(?:no\.?|number)\s*:?\s*)([A-Z0-9/\-]+)', subject, re.IGNORECASE)
@@ -151,9 +149,7 @@ LARGE_PDF_THRESHOLD_BYTES = 10 * 1024 * 1024  # 10 MB
 def _do_fetch_and_extract(token_json: str, msg_id: str, user_email: str) -> list[dict]:
     """Core logic for downloading PDFs and extracting text from one email."""
     import base64
-    import re
     import tempfile
-    from pathlib import Path
 
     import fitz
     from google.auth.transport.requests import Request
@@ -497,7 +493,6 @@ def process_emails(
 
 def _find_password_hint(payload: dict) -> str:
     """Extract password hint from email body."""
-    import base64
 
     text = _extract_body_text_from_payload(payload)
     if text:

@@ -17,7 +17,7 @@ EXTRACT_CONCURRENCY = 3
 
 # Check if Modal is available
 try:
-    import modal
+    import modal  # noqa: F401
     MODAL_AVAILABLE = True
 except ImportError:
     MODAL_AVAILABLE = False

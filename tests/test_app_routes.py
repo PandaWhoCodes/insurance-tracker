@@ -47,7 +47,7 @@ class TestApiMe:
 
 class TestApiPolicies:
     def test_unauthenticated(self, client):
-        response = client.get("/api/policies")
+        response = client.post("/api/policies", json={"vault_key": ""})
         assert response.status_code == 401
 
     def test_refresh_unauthenticated(self, client):
